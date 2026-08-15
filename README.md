@@ -176,6 +176,57 @@ each trace to a real agent session:
   attractive hole. Advisory color only — observability state can never
   affect compiled status.
 
+### Momentum (2.4)
+
+The 2.4 additions target one observed failure mode: a worker maps a
+hole, gets a green check, commits — and stops, because every signal
+rewarded *naming* the problem and nothing distinguished "parked after a
+real attack" from "parked unexamined." The tool cannot manufacture
+drive; what it can do is make the next concrete action obvious and
+cheap at the exact moment the author's context is fully loaded.
+
+- **`check` ends with what the change unlocked.** New establishments,
+  routes now one prerequisite from complete, fresh invalidations, and
+  plan-cost movement at goals and roots:
+
+  ```text
+  unlocked by this change:
+    established: beta
+    route r1 -> delta: missing only zeta (was 2 open)
+    root delta: cheapest mapped plan 2 -> 1 open hole(s)
+  ```
+
+  The build-system moment — "three targets just became buildable" —
+  shown to the one person best positioned to place the next stone.
+- **Naming a hole is not finishing it.** A NEW open claim (vs HEAD)
+  with no nonempty `## Attempts` section — at least one attempted
+  approach and where it dies, or one line on why the attack is
+  deferred — is a warning, and an error under `--changed`. Writing
+  down where the obvious attack fails is where the next one usually
+  comes from; the lint exists to force that one act of articulation
+  before parking. Goal claims are exempt (a goal is a wish, not a
+  target you attack directly).
+- **New open claims print their nearest established neighbours** ("near
+  established `alpha` (0.31) — check whether they already decide it"),
+  using the same TF-IDF geometry as the site layout. A fresh hole
+  adjacent to proved claims is often already decided by composing
+  them, and only the author, right then, is positioned to notice.
+- **`why` on an open claim prints the stakes both ways**: what
+  establishing it completes and cascades (including goal plan-cost
+  movement), and what refuting it — establishing the negation — would
+  dead-end. A hole should read as a fork with two prizes, not
+  inventory.
+- **⚑ marks last-missing holes** in `status`, `frontier`, and
+  `FRONTIER.md`: claims that are the single open prerequisite of some
+  live route. The cheapest wins float to the surface.
+
+"Cheapest mapped plan" is the least fixpoint of: established costs 0,
+an undecomposed open claim costs 1 (itself), a decomposed claim costs
+its best route's sum; `None` means no finite mapped plan exists and the
+missing work is route-finding, not lemma-proving. It measures the
+mapped decomposition only — any claim can still be attacked directly,
+but that is not a plan the graph knows about.
+
 ## Working with agents
 
 Cairn is designed for many concurrent workers of mixed species. The

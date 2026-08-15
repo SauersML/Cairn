@@ -50,7 +50,27 @@ claim-path each hole unblocks, warns when a goal has no route-tree at
 all (that means route-finding, not lemma-proving), and annotates holes
 that resisted prior locked attempts.
 
-Exit categories (stable, for agents): 0 ok, 2 duplicate candidates,
+MOMENTUM (the tool's job is to make continuing the default, not a
+decision): `check` ends by printing what the change UNLOCKED — new
+establishments, routes now one prerequisite from complete, fresh
+invalidations, plan-cost movement at goals — because the person who just
+placed a stone is the best-positioned to place the next one, and the
+moment after a green check is when their context is fully loaded.
+Naming a hole is not finishing it: a NEW open claim with no nonempty
+`## Attempts` section (one attempted approach and where it dies, or one
+line on why the attack is deferred) is a warning, and an error under
+`--changed` — writing down where the obvious attack fails is where the
+next one usually comes from. New open claims also print their nearest
+ESTABLISHED neighbours: a fresh hole adjacent to proved claims is often
+already decided by composing them, and only the author, right then, is
+positioned to notice. `why` on an open claim prints the stakes both
+ways (what establishing completes and cascades; what refuting
+dead-ends), so a hole reads as a fork with two prizes. `frontier`,
+`status` and FRONTIER.md flag holes that are the LAST missing
+prerequisite of some route with ⚑.
+
+Exit categories (stable, for agents): 0 ok, 2 policy findings
+(duplicate candidates, new holes parked without an Attempts section),
 3 already claimed, 4 invalid graph, 64 usage error, 1 runtime error
 (unknown node, bad ttl). All query commands take --json, and with
 --json every outcome — including errors — is a JSON envelope on stdout.
@@ -101,7 +121,7 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 NON_NODE_FILES = {"README.md", "FRONTIER.md"}
 KINDS = ("claim", "route")
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 
 EXIT_OK, EXIT_DUP, EXIT_LEASE, EXIT_INVALID, EXIT_USAGE = 0, 2, 3, 4, 64
 
@@ -602,6 +622,37 @@ def similar_nodes(text, nodes, kinds=None, limit=5, threshold=0.5, exclude=(),
     return sorted(out, key=lambda x: (-x[0], x[1].id))[:limit]
 
 
+def semantic_vectors(claims):
+    """TF-IDF vectors (unigrams + bigrams) over title+body, shared by the
+    site layout and the near-established hints so both see one geometry."""
+    import math
+
+    def feats(text):
+        words = [w for w in re.findall(r"[a-z0-9]+", text.lower())
+                 if len(w) > 2 and w not in STOPWORDS]
+        return set(words) | {a + "_" + b for a, b in zip(words, words[1:])}
+
+    docs = {cid: feats(c.title + " " + c.body) for cid, c in claims.items()}
+    df = {}
+    for toks in docs.values():
+        for t in toks:
+            df[t] = df.get(t, 0) + 1
+    N = max(1, len(docs))
+    cutoff = 0.35 * N   # program-wide jargon carries no signal
+    return {cid: {t: math.log(N / df[t]) for t in toks if df[t] <= cutoff}
+            for cid, toks in docs.items()}
+
+
+def cosine(u, v):
+    import math
+    if len(v) < len(u):
+        u, v = v, u
+    num = sum(w * v.get(t, 0.0) for t, w in u.items())
+    du = math.sqrt(sum(w * w for w in u.values()))
+    dv = math.sqrt(sum(w * w for w in v.values()))
+    return num / (du * dv) if du and dv else 0.0
+
+
 def duplicate_findings(graph, only_ids=None):
     """(claim, candidate, score) triples not answered by distinct_from."""
     out = []
@@ -720,11 +771,24 @@ def render_tree(graph, cid, locks, depth=0, seen=None, lines=None, max_depth=6):
     return lines
 
 
+def last_missing_for(graph, cid):
+    """Live routes for which this claim is the single open prerequisite."""
+    return [rid for rid in graph.required_by.get(cid, [])
+            if graph.routes[rid].status != "INVALIDATED"
+            and graph.routes[rid].blocked_on == [cid]]
+
+
 def claim_line(c, graph, locks, width=52):
     lock = locks.get(c.id)
     lockmark = f"  🔒 {fmt_remaining(lock)}" if lock else ""
+    last = last_missing_for(graph, c.id) if c.status == "OPEN" else []
+    lastmark = ""
+    if last:
+        more = f" +{len(last) - 1}" if len(last) > 1 else ""
+        lastmark = f"  ⚑ last missing for {last[0]}{more}"
     title = c.title if len(c.title) <= width else c.title[:width - 1] + "…"
-    return f"{c.id:<36}  {title:<{width}}  {MARK.get(c.status, c.status)}{lockmark}"
+    return (f"{c.id:<36}  {title:<{width}}  "
+            f"{MARK.get(c.status, c.status)}{lastmark}{lockmark}")
 
 
 def why_chain(graph, cid, limit=8):
@@ -1045,8 +1109,12 @@ def generate_frontier_md(graph, locks):
             toward = "; a goal with no routes yet — needs decomposition"
         else:
             toward = "; on no live path to a goal"
+        last = last_missing_for(graph, cid)
+        flag = "".join(
+            f" — ⚑ last missing for {rid} → {graph.routes[rid].meta.get('target')}"
+            for rid in last[:2])
         L.append(f"- **{cid}** [{graph.claim_impact[cid]} live route(s) need it"
-                 f"{toward}] [{c.title}]({cid}.md){who}")
+                 f"{toward}] [{c.title}]({cid}.md){flag}{who}")
     L += ["", "## Open internal claims (live decompositions exist)", ""]
     L += [f"- {cid} [{graph.claims[cid].title}]({cid}.md)" for cid in graph.internal_open]
     L += ["", "## Recently touched", ""]
@@ -1497,32 +1565,9 @@ def generate_site(graph, locks):
             data["junctions"].append({**rec, "requires": reqs})
     # semantic affinity: TF-IDF cosine over statements -> invisible
     # attraction links, so conceptually close claims sit close on screen
-    import math
-
-    def _feats(text):
-        words = [w for w in re.findall(r"[a-z0-9]+", text.lower())
-                 if len(w) > 2 and w not in STOPWORDS]
-        return set(words) | {a + "_" + b for a, b in zip(words, words[1:])}
-
-    docs = {cid: _feats(c.title + " " + c.body) for cid, c in graph.claims.items()}
-    df = {}
-    for toks in docs.values():
-        for t in toks:
-            df[t] = df.get(t, 0) + 1
-    N = max(1, len(docs))
-    cutoff = 0.35 * N   # program-wide jargon carries no signal
-    vecs = {cid: {t: math.log(N / df[t]) for t in toks if df[t] <= cutoff}
-            for cid, toks in docs.items()}
-
-    def _cos(u, v):
-        if len(v) < len(u):
-            u, v = v, u
-        num = sum(w * v.get(t, 0.0) for t, w in u.items())
-        du = math.sqrt(sum(w * w for w in u.values()))
-        dv = math.sqrt(sum(w * w for w in v.values()))
-        return num / (du * dv) if du and dv else 0.0
-
-    cids = list(docs)
+    vecs = semantic_vectors(graph.claims)
+    _cos = cosine
+    cids = list(vecs)
     pairs = []
     for i in range(len(cids)):
         for j in range(i + 1, len(cids)):
@@ -1641,6 +1686,122 @@ def head_graph():
     return graph, errors, tmp
 
 
+def previous_graph(changed_ids):
+    """Compile the graph as of HEAD, cheaply: seed a scratch dir from the
+    working tree and re-fetch only the changed files from HEAD (one
+    `git show` per changed file instead of one per node). Returns None
+    when git is unavailable or the change set is degenerate."""
+    if changed_ids is None or not changed_ids or len(changed_ids) > 200:
+        return None
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix="prev-", dir=STATE_DIR)
+    try:
+        try:
+            names = os.listdir(RESEARCH_DIR)
+        except OSError:
+            return None
+        for f in names:
+            if (not f.endswith(".md") or f in NON_NODE_FILES
+                    or f[:-3] in changed_ids):
+                continue
+            src = os.path.join(RESEARCH_DIR, f)
+            if os.path.isfile(src):
+                shutil.copy(src, os.path.join(tmp, f))
+        for cid in changed_ids:
+            show = _git("show", f"HEAD:research/{cid}.md")
+            if show.returncode == 0:
+                with open(os.path.join(tmp, cid + ".md"), "w", encoding="utf-8") as f:
+                    f.write(show.stdout)
+        graph, _ = compile_graph(research_dir=tmp, repo=REPO)
+        return graph
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def remaining_cost(graph, assume=frozenset()):
+    """Open holes on the cheapest MAPPED plan for each claim.
+
+    Established (or assumed) claims cost 0; an open claim with no live
+    routes into it is itself one hole; a decomposed claim costs its best
+    route's sum. None = no finite mapped plan (route-finding needed, not
+    lemma-proving). This measures the mapped decomposition only — any
+    claim can still be attacked directly, but that is not a plan the
+    graph knows about."""
+    INF = float("inf")
+    done = graph.established | set(assume)
+    plans = {}
+    for r in graph.routes.values():
+        if r.status == "INVALIDATED":
+            continue
+        tgt = r.meta.get("target")
+        if tgt in graph.claims and tgt not in done:
+            plans.setdefault(tgt, []).append(
+                [q for q in r.get_list("requires") if q in graph.claims])
+    cost = {}
+    for c in graph.claims:
+        cost[c] = 0 if c in done else (INF if c in plans else 1)
+    for _ in range(len(graph.claims) + 1):
+        changed = False
+        for c, ps in plans.items():
+            best = min((sum(cost[q] for q in reqs) for reqs in ps), default=INF)
+            if best < cost[c]:
+                cost[c] = best
+                changed = True
+        if not changed:
+            break
+    return {c: (None if v == INF else v) for c, v in cost.items()}
+
+
+def kinetic_delta(old, new):
+    """What the working tree changed in derived state, phrased forward:
+    establishments, routes now one prerequisite from complete, fresh
+    invalidations, and plan-cost movement at the goals and roots. This
+    is the build-system moment — 'three targets just became buildable' —
+    printed while the author's context is still loaded."""
+    d = {"established": sorted(new.established - old.established),
+         "last_missing": [], "invalidated": [], "plan_cost": []}
+    for rid, r in sorted(new.routes.items()):
+        if r.status != "OPEN" or len(r.blocked_on) != 1:
+            continue
+        o = old.routes.get(rid)
+        if o is None:
+            d["last_missing"].append(
+                (rid, r.meta.get("target"), r.blocked_on[0], None))
+        elif o.status == "OPEN" and len(o.blocked_on) > 1:
+            d["last_missing"].append(
+                (rid, r.meta.get("target"), r.blocked_on[0], len(o.blocked_on)))
+    for rid in sorted(new.invalidated - old.invalidated):
+        if rid in old.routes:
+            d["invalidated"].append(
+                (rid, ", ".join(new.invalidated_by.get(rid, ()))))
+    anchors = sorted(set(new.goals) | set(new.roots))
+    if anchors:
+        oc, nc = remaining_cost(old), remaining_cost(new)
+        for gid in anchors:
+            if gid not in old.claims:
+                continue
+            a, b = oc.get(gid), nc.get(gid)
+            if a != b and b is not None:
+                kind = "goal" if gid in new.goals else "root"
+                d["plan_cost"].append((kind, gid, a, b))
+    return d
+
+
+ATTEMPTS_HEADING = re.compile(r"^\s{0,3}#{2,6}\s*(attempts?|attack log)\b.*$",
+                              re.I | re.M)
+
+
+def missing_attempts(body):
+    """True when the body has no nonempty '## Attempts' section."""
+    m = ATTEMPTS_HEADING.search(body)
+    if not m:
+        return True
+    rest = body[m.end():]
+    nxt = re.search(r"^\s{0,3}#{1,6}\s", rest, flags=re.M)
+    content = rest[:nxt.start()] if nxt else rest
+    return not content.strip()
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -1655,17 +1816,36 @@ def write_outputs(graph):
 
 def cmd_check(args):
     graph, errors = compile_graph()
+    changed = changed_research_files()
     only = None
     if args.changed:
-        only = changed_research_files()
+        only = changed
         if only is None:
             print("WARNING: git unavailable; checking everything", file=sys.stderr)
     dups = duplicate_findings(graph, only_ids=only)
-    dup_sev = "error" if args.changed else "warning"
+    policy_sev = "error" if args.changed else "warning"
     for cid, cand, score in dups:
-        errors.append((dup_sev, f"possible duplicate claim: {cid} vs {cand} "
+        errors.append((policy_sev, f"possible duplicate claim: {cid} vs {cand} "
                        f"(similarity {score}); if genuinely distinct, add to {cid}:\n"
                        f"  distinct_from:\n    {cand}: <why this is not that>"))
+    # naming a hole is not finishing it: a NEW open claim must record at
+    # least one attack (or say why the attack is deferred) before parking
+    prev = previous_graph(changed)
+    new_open = []
+    if prev is not None:
+        new_open = sorted(cid for cid in graph.claims
+                          if cid not in prev.nodes
+                          and graph.claims[cid].status == "OPEN")
+    parked = [cid for cid in new_open
+              if not graph.claims[cid].meta.get("goal")
+              and missing_attempts(graph.claims[cid].body)]
+    for cid in parked:
+        errors.append((policy_sev,
+                       f"{graph.claims[cid].relpath}: new open claim {cid} parks a "
+                       "hole with no recorded attack — add an '## Attempts' section: "
+                       "at least one approach and where it dies, or one line on why "
+                       "the attack is deferred. Writing down where the obvious "
+                       "attack fails is where the next one usually comes from"))
     nerr = report_errors(errors, fail_on_warning=args.strict)
     if graph.unreachable_open:
         print("to reconnect an unreachable claim: add a route from a reachable "
@@ -1677,14 +1857,48 @@ def cmd_check(args):
                 exclude={cid}, min_overlap=1) if m.reachable][:2]
             print(f"  {cid}" + (f" ~ {', '.join(near)}" if near else " ~ (none)"),
                   file=sys.stderr)
+    # momentum, printed while the author's context is still loaded
+    delta = kinetic_delta(prev, graph) if prev is not None else None
+    n_unlocked = 0
+    if delta and any(delta.values()):
+        n_unlocked = sum(len(v) for v in delta.values())
+        print("unlocked by this change:")
+        if delta["established"]:
+            print("  established: " + ", ".join(delta["established"]))
+        for rid, tgt, miss, was in delta["last_missing"]:
+            tail = "(new route)" if was is None else f"(was {was} open)"
+            print(f"  route {rid} -> {tgt}: missing only {miss} {tail}")
+        for rid, by in delta["invalidated"]:
+            print(f"  route {rid}: invalidated" + (f" by {by}" if by else ""))
+        for kind, gid, a, b in delta["plan_cost"]:
+            was_s = "no finite mapped plan" if a is None else str(a)
+            print(f"  {kind} {gid}: cheapest mapped plan {was_s} -> {b} open hole(s)")
+    # the compose check: a fresh hole next to established claims is often
+    # already decided by them — the author is the one person positioned
+    # to notice, right now
+    hints = 0
+    if new_open:
+        vecs = semantic_vectors(graph.claims)
+        for cid in new_open:
+            near = sorted(((cosine(vecs[cid], vecs[oid]), oid)
+                           for oid in graph.established if oid != cid),
+                          reverse=True)[:3]
+            near = [(s, o) for s, o in near if s >= 0.12]
+            if near:
+                hints += 1
+                print(f"note: {cid} is near established "
+                      + ", ".join(f"{o} ({s:.2f})" for s, o in near)
+                      + " — check whether they already decide it")
+    TELEMETRY_EXTRA.update({"unlocked": n_unlocked, "parked": len(parked),
+                            "hints": hints})
     write_outputs(graph)
     print(f"compiled {len(graph.claims)} claims + {len(graph.routes)} routes -> "
           f".cairn/cache/graph.json, research/FRONTIER.md"
           + ("" if errors else " — check clean"))
     if not nerr:
         return EXIT_OK
-    non_dup_errors = nerr - (len(dups) if (args.changed or args.strict) else 0)
-    return EXIT_INVALID if non_dup_errors > 0 else EXIT_DUP
+    n_policy = (len(dups) + len(parked)) if (args.changed or args.strict) else 0
+    return EXIT_INVALID if nerr - n_policy > 0 else EXIT_DUP
 
 
 def cmd_preview(args):
@@ -1701,6 +1915,10 @@ def cmd_preview(args):
         if n.kind == "route" and not n.get_list("requires"):
             delta["direct_proof_assertions"].append(nid)
             L.append(f"    NOTE: requires: [] — asserts a COMPLETE PROOF of {n.meta.get('target')}")
+        elif (n.kind == "claim" and n.status == "OPEN"
+                and not n.meta.get("goal") and missing_attempts(n.body)):
+            L.append("    NOTE: parks a hole with no '## Attempts' section "
+                     "(an approach and where it dies)")
     for nid in sorted(set(old.nodes) - set(new.nodes)):
         delta["removed"].append(nid)
         L.append(f"- {nid}  [{old.nodes[nid].kind}] {old.nodes[nid].title}")
@@ -1958,6 +2176,46 @@ def cmd_status(args):
     return emit(args, payload, "\n".join(L))
 
 
+def stakes_lines(graph, cid, waiting):
+    """Both payoffs of an open claim, so a hole reads as a fork with two
+    prizes rather than inventory: what establishing it completes and
+    cascades, and what a refutation (an established negation) would
+    dead-end."""
+    L = []
+    est2, _, _, _ = graph._solve(forced=frozenset(graph.established | {cid}))
+    completes = [rid for rid in waiting if graph.routes[rid].blocked_on == [cid]]
+    comp_tgts = {graph.routes[rid].meta.get("target") for rid in completes}
+    cascade = sorted(est2 - graph.established - {cid} - comp_tgts)
+    gains = []
+    if completes:
+        gains.append("completes " + ", ".join(
+            f"{rid} -> {graph.routes[rid].meta.get('target')}" for rid in completes))
+    if cascade:
+        gains.append("cascade also establishes: " + ", ".join(cascade))
+    base = remaining_cost(graph)
+    bumped = remaining_cost(graph, assume={cid})
+    for gid in sorted(set(graph.goals) | set(graph.roots)):
+        if gid == cid:
+            continue
+        a, b = base.get(gid), bumped.get(gid)
+        if a != b and b is not None:
+            kind = "goal" if gid in graph.goals else "root"
+            was = "no finite mapped plan" if a is None else str(a)
+            gains.append(f"{kind} {gid}: cheapest mapped plan {was} -> {b}")
+    if gains:
+        L.append("if established: " + "; ".join(gains))
+    if waiting:
+        parts = []
+        for rid in waiting:
+            tgt = graph.routes[rid].meta.get("target")
+            others = [r2 for r2 in graph.routes_into.get(tgt, ())
+                      if r2 != rid and graph.routes[r2].status != "INVALIDATED"]
+            parts.append(f"{rid} ({tgt} keeps {len(others)} other live route(s))")
+        L.append("if refuted (establish the negation): dead-ends "
+                 + ", ".join(parts))
+    return L
+
+
 def cmd_why(args):
     # Line 1 is always self-identifying (`<id> [STATUS] — …`): agents
     # habitually pipe this through `head -1` and must learn something.
@@ -2003,6 +2261,8 @@ def cmd_why(args):
                    if graph.routes[rid].status != "INVALIDATED"]
         if waiting:
             L.append("live routes waiting on it: " + ", ".join(waiting))
+        if n.status == "OPEN":
+            L += stakes_lines(graph, args.id, waiting)
     payload = {"status": "ok", "id": args.id, "kind": n.kind,
                "node_status": n.status, "why": L}
     return emit(args, payload, "\n".join(L))
@@ -2017,11 +2277,16 @@ def cmd_why(args):
 # (and which commands they never touch) to drive design changes.
 # ---------------------------------------------------------------------------
 
+TELEMETRY_EXTRA = {}  # commands may deposit counters (e.g. banner sizes)
+
+
 def record_telemetry(cmd, argv, code, ms):
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
         entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "cmd": cmd,
                  "argv": argv, "exit": code, "ms": ms}
+        if TELEMETRY_EXTRA:
+            entry["extra"] = dict(TELEMETRY_EXTRA)
         with open(TELEMETRY, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
     except OSError:
@@ -2094,10 +2359,10 @@ def main():
             self.exit(EXIT_USAGE, f"{self.prog}: error: {message}\n")
 
     p = Parser(prog="cairn", description=__doc__.split("\n")[0],
-               epilog="exit codes: 0 ok · 2 duplicate candidates · "
-                      "3 already claimed · 4 invalid graph · 64 usage · "
-                      "1 runtime error. Env: CAIRN_ROOT overrides "
-                      "project-root discovery.")
+               epilog="exit codes: 0 ok · 2 policy findings (duplicates, "
+                      "unattacked new holes) · 3 already claimed · 4 invalid "
+                      "graph · 64 usage · 1 runtime error. Env: CAIRN_ROOT "
+                      "overrides project-root discovery.")
     p.add_argument("--version", action="version", version=f"cairn {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -2112,7 +2377,8 @@ def main():
     ck = add("check", "compile + lint + duplicate detection; refresh FRONTIER.md",
              jsonable=False, aliases=("build",))
     ck.add_argument("--changed", action="store_true",
-                    help="duplicates are errors for files changed vs HEAD")
+                    help="duplicates and unattacked new holes are errors "
+                         "for files changed vs HEAD")
     ck.add_argument("--strict", action="store_true", help="fail on warnings")
     add("preview", "research-state delta of the working tree vs HEAD")
     add("status", "one-screen program state: goals, frontier, locks")
@@ -2122,8 +2388,8 @@ def main():
                     help="restrict to holes on live paths into this claim")
     fr.add_argument("--flat", action="store_true",
                     help="ungrouped impact-ranked list (the pre-2.3 view)")
-    add("why", "derivation if established; decomposition + why-it-matters if open",
-        node_id=True)
+    add("why", "derivation if established; decomposition, why-it-matters and "
+        "stakes-both-ways if open", node_id=True)
     cx = add("context", "bounded context packet (statement, derivation, routes, "
              "reusable claims, dead space)", node_id=True)
     cx.add_argument("--budget", type=int, default=8000, help="approx token budget")
