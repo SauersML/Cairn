@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cairn"
+version = "2.0.0"
+description = "A build system whose build targets are unknown facts."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+
+[project.scripts]
+cairn = "cairn:main"
+
+[tool.setuptools]
+py-modules = ["cairn"]

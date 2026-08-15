@@ -1,0 +1,8 @@
+.cairn/
+**/.cairn/
+__pycache__/
+*.pyc
+**/research/FRONTIER.md
+dist/
+build/
+*.egg-info/

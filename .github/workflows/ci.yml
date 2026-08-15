@@ -1,0 +1,37 @@
+# Self-test: compile the example graph with the CLI it ships with.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Compile the example graph
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: check --strict
+        working-directory: examples/demo
+        run: ../../bin/cairn check --strict
+
+      - name: query commands
+        working-directory: examples/demo
+        run: |
+          ../../bin/cairn frontier --json
+          ../../bin/cairn impact quadrant-induction-step
+          ../../bin/cairn context mutilated-board-untileable --budget 2000
+          ../../bin/cairn search "coloring argument"
+
+      - name: build the static site
+        working-directory: examples/demo
+        run: ../../bin/cairn site
+
+      - name: pip install
+        run: |
+          python3 -m pip install .
+          cd examples/demo && cairn check
