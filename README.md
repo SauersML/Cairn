@@ -8,8 +8,6 @@
 
 [**Live demo**](https://sauersml.github.io/Cairn/) · [Quick start](#quick-start) · [The kernel](#the-kernel) · [CLI](#the-cli) · [Agents](#working-with-agents)
 
-*Every finding is a waymark stacked in unmapped terrain,<br>for whoever comes next.*
-
 </div>
 
 ---
