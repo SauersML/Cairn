@@ -119,24 +119,33 @@ Outputs: `.cairn/cache/graph.json` (machine) and `research/FRONTIER.md`
 
 ## CLI
 
-Read-only over canonical files and deliberately small — eleven commands:
+Read-only over canonical files and deliberately small:
 
 ```text
 check      compile + lint + duplicate detection; refresh FRONTIER.md
            (--changed: duplicates are errors for files changed vs HEAD;
-            --strict: fail on warnings)
+            --strict: fail on warnings)   alias: build
 preview    derived-state delta of the working tree vs HEAD, before you commit
+status     one-screen program state: counts, goals, top frontier, locks
 frontier   unresolved claims worth attacking, highest impact first
+why ID     how a node was established (derivation), or why it matters if open
 context ID bounded packet for one node: statement, derivation, routes in/out,
            reusable established claims, nearby failed space (--budget tokens)
 search Q   lexical search over the graph (--notes to include notes/)
+relevant Q nodes similar to a node id or to free text
 impact ID  what would flip if this claim were established
 lock ID    acquire a TTL work lease (--ttl 45m; re-run to extend)
 unlock ID  release it (--force to break another owner's)
 next       highest-impact unclaimed frontier claim (--lock to claim it)
 site       static HTML site into .cairn/site/
-telemetry  usage summary: what agents actually run
+telemetry  usage summary: what workers actually run, and what they never touch
 ```
+
+Unknown node ids fail with nearest-id suggestions; lock TTLs require an
+explicit unit (`900s`, `45m`, `2h`) so a bare number can never silently
+mean the wrong timescale. Several commands (`status`, `why`, `relevant`,
+the `build` alias) exist because usage telemetry showed workers reaching
+for them — `telemetry` closes that loop for your own deployment.
 
 Exit codes are stable for scripting: `0` ok, `2` duplicate candidates,
 `3` lease conflict, `4` invalid graph. Every query command takes
@@ -217,22 +226,59 @@ curl -fsSL https://raw.githubusercontent.com/SauersML/Cairn/main/cairn.py -o too
 git clone https://github.com/SauersML/Cairn && Cairn/bin/cairn --help
 ```
 
-Then, in your project:
+## Quick start
+
+A complete project is three files:
 
 ```sh
-mkdir -p research notes
-echo '.cairn/' >> .gitignore
-cairn check
+mkdir -p research notes && echo '.cairn/' >> .gitignore
+
+cat > research/main-conjecture.md <<'EOF'
+---
+rg: 2
+id: main-conjecture
+kind: claim
+title: The main conjecture of the program
+root: true
+goal: true
+---
+
+State the thing you are actually trying to prove.
+EOF
+
+cat > research/key-lemma.md <<'EOF'
+---
+rg: 2
+id: key-lemma
+kind: claim
+title: The key lemma
+---
+
+The technical statement everything hinges on.
+EOF
+
+cat > research/via-key-lemma.md <<'EOF'
+---
+rg: 2
+id: via-key-lemma
+kind: route
+title: Reduce the conjecture to the key lemma
+target: main-conjecture
+requires: [key-lemma]
+---
+
+Why the lemma implies the conjecture. This body is a mathematical
+commitment: the route's existence asserts the implication is valid.
+EOF
+
+cairn check      # compiles; writes research/FRONTIER.md
+cairn frontier   # -> key-lemma is the one hole worth attacking
 ```
 
-and write your first `root: true` claim.
-
-## Example
-
-`examples/demo/` is a complete miniature program (two classic tiling
-theorems: one established, one open, one refuted route) — see its
-[README](examples/demo/README.md). CI compiles it with `--strict` on
-every push.
+The moment someone adds a route with `requires: []` targeting
+`key-lemma`, both claims flip to ESTABLISHED on the next `check` —
+status is derived, never edited. (CI runs exactly this scenario as its
+smoke test.)
 
 ## Design principles
 

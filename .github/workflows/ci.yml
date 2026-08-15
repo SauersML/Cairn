@@ -1,4 +1,5 @@
-# Self-test: compile the example graph with the CLI it ships with.
+# Self-test: scaffold the README quick-start project, drive it through
+# the open -> established transition, and exercise every query command.
 name: CI
 
 on:
@@ -9,29 +10,91 @@ on:
 
 jobs:
   check:
-    name: Compile the example graph
+    name: Compile a scaffolded project
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - name: check --strict
-        working-directory: examples/demo
-        run: ../../bin/cairn check --strict
-
-      - name: query commands
-        working-directory: examples/demo
+      - name: Scaffold the quick-start project
         run: |
-          ../../bin/cairn frontier --json
-          ../../bin/cairn impact quadrant-induction-step
-          ../../bin/cairn context mutilated-board-untileable --budget 2000
-          ../../bin/cairn search "coloring argument"
+          mkdir -p t/research t/notes
+          cat > t/research/main-conjecture.md <<'EOF'
+          ---
+          rg: 2
+          id: main-conjecture
+          kind: claim
+          title: The main conjecture of the program
+          root: true
+          goal: true
+          ---
 
-      - name: build the static site
-        working-directory: examples/demo
-        run: ../../bin/cairn site
+          State the thing you are actually trying to prove.
+          EOF
+          cat > t/research/key-lemma.md <<'EOF'
+          ---
+          rg: 2
+          id: key-lemma
+          kind: claim
+          title: The key lemma
+          ---
+
+          The technical statement everything hinges on.
+          EOF
+          cat > t/research/via-key-lemma.md <<'EOF'
+          ---
+          rg: 2
+          id: via-key-lemma
+          kind: route
+          title: Reduce the conjecture to the key lemma
+          target: main-conjecture
+          requires: [key-lemma]
+          ---
+
+          Why the lemma implies the conjecture.
+          EOF
+
+      - name: Open state — check, query, site
+        working-directory: t
+        run: |
+          ../bin/cairn check --strict
+          ../bin/cairn status
+          ../bin/cairn frontier --json | grep key-lemma
+          ../bin/cairn why main-conjecture | grep OPEN
+          ../bin/cairn impact key-lemma | grep main-conjecture
+          ../bin/cairn context main-conjecture --budget 2000
+          ../bin/cairn relevant main-conjecture
+          ../bin/cairn search "key lemma"
+          ../bin/cairn site
+          test -f .cairn/site/index.html
+
+      - name: Unknown ids fail with suggestions; unitless TTLs fail
+        working-directory: t
+        run: |
+          ! ../bin/cairn why kee-lemma
+          ../bin/cairn why kee-lemma 2>&1 | grep "nearest: key-lemma"
+          ! ../bin/cairn lock key-lemma --ttl 10800
+
+      - name: Establish the lemma and watch the goal flip
+        working-directory: t
+        run: |
+          cat > research/prove-key-lemma.md <<'EOF'
+          ---
+          rg: 2
+          id: prove-key-lemma
+          kind: route
+          title: Direct proof of the key lemma
+          target: key-lemma
+          requires: []
+          ---
+
+          The complete argument.
+          EOF
+          ../bin/cairn build --strict
+          ../bin/cairn why main-conjecture | grep "via via-key-lemma"
+          ../bin/cairn status --json | grep '"established": 2'
 
       - name: pip install
         run: |
-          python3 -m pip install .
-          cd examples/demo && cairn check
+          python3 -m pip install --quiet .
+          cd t && cairn check --strict

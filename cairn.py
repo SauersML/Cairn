@@ -28,11 +28,13 @@ CANONICAL vs NONCANONICAL:
                          searchable, but can NEVER change compiled state,
                          and canonical files may not cite it as justification.
 
-THE CLI is read-only over canonical files and deliberately small — eleven
-commands: check (compile+lint+dups, refreshes FRONTIER.md), preview
-(state delta vs HEAD), frontier, context --budget (statement, derivation,
-routes, reusable claims, dead space in one bounded packet), search
-[--notes], impact, lock/unlock (TTL leases; re-run lock to extend), next
+THE CLI is read-only over canonical files and deliberately small:
+check (compile+lint+dups, refreshes FRONTIER.md; alias: build), preview
+(state delta vs HEAD), status (one-screen program state), frontier,
+why (how a node was established / why it matters), context --budget
+(statement, derivation, routes, reusable claims, dead space in one
+bounded packet), search [--notes], relevant (similarity to an id or free
+text), impact, lock/unlock (TTL leases; re-run lock to extend), next
 --lock, site, telemetry. Locks are scheduler state, never committed into
 mathematical history.
 
@@ -525,7 +527,8 @@ def _tokens(text):
             if len(w) > 2 and w not in STOPWORDS}
 
 
-def similar_nodes(text, nodes, kinds=None, limit=5, threshold=0.5, exclude=()):
+def similar_nodes(text, nodes, kinds=None, limit=5, threshold=0.5, exclude=(),
+                  min_overlap=2):
     t = _tokens(text)
     out = []
     for n in nodes.values():
@@ -536,7 +539,7 @@ def similar_nodes(text, nodes, kinds=None, limit=5, threshold=0.5, exclude=()):
             continue
         inter = len(t & u)
         score = inter / min(len(t), len(u))
-        if inter >= 2 and score >= threshold:
+        if inter >= min_overlap and score >= threshold:
             out.append((round(score, 2), n))
     return sorted(out, key=lambda x: (-x[0], x[1].id))[:limit]
 
@@ -570,10 +573,10 @@ def _lock_path(nid):
 
 
 def parse_ttl(s):
-    m = re.fullmatch(r"(\d+)\s*([smhd]?)", s.strip())
+    m = re.fullmatch(r"(\d+)\s*([smhd])", s.strip())
     if not m:
-        raise SystemExit(f"bad ttl {s!r} (use e.g. 45m, 2h, 900s)")
-    return int(m.group(1)) * {"": 60, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+        raise SystemExit(f"ambiguous ttl {s!r} — give a unit: 900s, 45m, 2h, 1d")
+    return int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
 
 
 def read_lock(nid):
@@ -738,10 +741,20 @@ def notes_mentioning(nid, limit=5):
     return sorted(hits)[:limit]
 
 
+def unknown_node(graph, nid):
+    """Exit with near-miss suggestions instead of a bare 'unknown node'."""
+    sugg = [n.id for _, n in similar_nodes(nid.replace("-", " "), graph.nodes,
+                                           limit=3, threshold=0.25, min_overlap=1)]
+    msg = f"unknown node {nid!r}"
+    if sugg:
+        msg += " — nearest: " + ", ".join(sugg)
+    raise SystemExit(msg)
+
+
 def context_packet(graph, nid, locks, budget_tokens=8000):
     n = graph.nodes.get(nid)
     if n is None:
-        raise SystemExit(f"unknown node {nid}")
+        unknown_node(graph, nid)
     budget = budget_tokens * 4  # rough chars
     sections = []
 
@@ -1543,8 +1556,10 @@ def cmd_search(args):
 def cmd_impact(args):
     graph, errors = compile_graph()
     n = graph.nodes.get(args.id)
-    if n is None or n.kind != "claim":
-        raise SystemExit(f"{args.id!r} is not a known claim")
+    if n is None:
+        unknown_node(graph, args.id)
+    if n.kind != "claim":
+        raise SystemExit(f"{args.id!r} is a route; impact takes a claim")
     est1, inv1, _, _ = graph._solve(forced=frozenset([args.id]))
     newly = sorted(est1 - graph.established - {args.id})
     newly_dead = sorted(inv1 - graph.invalidated)
@@ -1616,6 +1631,77 @@ def cmd_site(args):
     return EXIT_OK
 
 
+def cmd_status(args):
+    graph, errors = compile_graph()
+    report_errors(errors)
+    locks = all_locks()
+    est = sum(1 for c in graph.claims.values() if c.status == "ESTABLISHED")
+    L = [f"{len(graph.claims)} claims ({est} established) · "
+         f"{len(graph.routes)} routes ({len(graph.invalidated)} invalidated) · "
+         f"{len(graph.frontier)} frontier holes · {len(locks)} active locks"]
+    if graph.goals:
+        L.append("goals:")
+        L += [f"  {gid} [{graph.claims[gid].status}] {graph.claims[gid].title}"
+              for gid in graph.goals]
+    top = sorted(graph.frontier, key=lambda q: -graph.claim_impact[q])[:5]
+    if top:
+        L.append("frontier (top impact):")
+        L += ["  " + claim_line(graph.claims[q], graph, locks) for q in top]
+    payload = {"status": "ok", "claims": len(graph.claims), "established": est,
+               "routes": len(graph.routes), "invalidated": len(graph.invalidated),
+               "frontier": len(graph.frontier),
+               "goals": [{"id": g, "node_status": graph.claims[g].status}
+                         for g in graph.goals],
+               "locks": {k: v["owner"] for k, v in locks.items()}}
+    return emit(args, payload, "\n".join(L))
+
+
+def cmd_why(args):
+    graph, errors = compile_graph()
+    report_errors(errors)
+    n = graph.nodes.get(args.id)
+    if n is None:
+        unknown_node(graph, args.id)
+    L = []
+    if n.kind == "route":
+        reqs = n.get_list("requires")
+        L.append(f"{args.id} [{n.status}]: "
+                 f"{' AND '.join(reqs) if reqs else '(direct proof)'} "
+                 f"=> {n.meta.get('target')}")
+        L += ["  " + r for r in n.status_reasons]
+    else:
+        if n.status == "ESTABLISHED":
+            L += ["derivation:"] + ["  " + x for x in derivation_lines(graph, args.id)]
+        else:
+            L.append(f"{args.id} is OPEN")
+        chain = why_chain(graph, args.id)
+        if chain:
+            L.append("why it matters: "
+                     + " -> ".join([chain[0][0]] + [c for _, _, c in chain]))
+        waiting = [rid for rid in graph.required_by.get(args.id, [])
+                   if graph.routes[rid].status != "INVALIDATED"]
+        if waiting:
+            L.append("live routes waiting on it: " + ", ".join(waiting))
+    payload = {"status": "ok", "id": args.id, "kind": n.kind,
+               "node_status": n.status, "why": L}
+    return emit(args, payload, "\n".join(L))
+
+
+def cmd_relevant(args):
+    graph, errors = compile_graph()
+    report_errors(errors)
+    n = graph.nodes.get(args.query)
+    text = (n.title + " " + n.body[:400]) if n else args.query
+    hits = similar_nodes(text, graph.nodes, limit=args.limit, threshold=0.2,
+                         exclude={args.query}, min_overlap=1)
+    payload = {"status": "ok", "results": [
+        {"id": m.id, "kind": m.kind, "node_status": m.status,
+         "title": m.title, "score": s} for s, m in hits]}
+    human = "\n".join(f"{m.id:<44} [{m.kind}/{m.status}] {m.title}"
+                      for _, m in hits) or "(nothing similar)"
+    return emit(args, payload, human)
+
+
 # ---------------------------------------------------------------------------
 # Telemetry: every invocation appends one JSONL record. Observability
 # state (like locks) — lives in .cairn/, never committed, never able to
@@ -1669,7 +1755,7 @@ def cmd_telemetry(args):
         c["ms"].append(e.get("ms", 0))
         per_agent[e.get("agent", "?")] = per_agent.get(e.get("agent", "?"), 0) + 1
         per_exit[str(e["exit"])] = per_exit.get(str(e["exit"]), 0) + 1
-    unused = sorted(set(COMMANDS) - {"telemetry"} - set(per_cmd))
+    unused = sorted(set(COMMANDS) - {"telemetry", "build"} - set(per_cmd))
     L = [f"{len(entries)} invocations, {entries[0]['ts']} .. {entries[-1]['ts']}", "",
          f"{'command':<12} {'n':>5} {'errs':>5} {'med ms':>7}"]
     stats = {}
@@ -1693,15 +1779,16 @@ COMMANDS = {}
 
 def main():
     COMMANDS.update({
-        "check": cmd_check, "preview": cmd_preview, "frontier": cmd_frontier,
-        "context": cmd_context, "search": cmd_search, "impact": cmd_impact,
-        "lock": cmd_lock, "unlock": cmd_unlock, "next": cmd_next,
-        "site": cmd_site, "telemetry": cmd_telemetry})
+        "check": cmd_check, "build": cmd_check, "preview": cmd_preview,
+        "status": cmd_status, "frontier": cmd_frontier, "why": cmd_why,
+        "context": cmd_context, "search": cmd_search, "relevant": cmd_relevant,
+        "impact": cmd_impact, "lock": cmd_lock, "unlock": cmd_unlock,
+        "next": cmd_next, "site": cmd_site, "telemetry": cmd_telemetry})
     p = argparse.ArgumentParser(prog="cairn", description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    def add(name, help_, *, jsonable=True, agent=False, node_id=False):
-        sp = sub.add_parser(name, help=help_)
+    def add(name, help_, *, jsonable=True, agent=False, node_id=False, aliases=()):
+        sp = sub.add_parser(name, help=help_, aliases=list(aliases))
         if jsonable:
             sp.add_argument("--json", action="store_true")
         if agent:
@@ -1711,12 +1798,18 @@ def main():
         return sp
 
     ck = add("check", "compile + lint + duplicate detection; refresh FRONTIER.md",
-             jsonable=False)
+             jsonable=False, aliases=("build",))
     ck.add_argument("--changed", action="store_true",
                     help="duplicates are errors for files changed vs HEAD")
     ck.add_argument("--strict", action="store_true", help="fail on warnings")
     add("preview", "research-state delta of the working tree vs HEAD")
+    add("status", "one-screen program state: goals, frontier, locks")
     add("frontier", "unresolved claims worth attacking, with locks")
+    add("why", "how a node was established, or why it matters if open",
+        node_id=True)
+    rv = add("relevant", "nodes similar to a node id or to free text")
+    rv.add_argument("query")
+    rv.add_argument("--limit", type=int, default=10)
     cx = add("context", "bounded context packet (statement, derivation, routes, "
              "reusable claims, dead space)", node_id=True)
     cx.add_argument("--budget", type=int, default=8000, help="approx token budget")
