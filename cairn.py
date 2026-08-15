@@ -31,12 +31,24 @@ CANONICAL vs NONCANONICAL:
 THE CLI is read-only over canonical files and deliberately small —
 twelve commands: check (compile+lint+dups, refreshes FRONTIER.md; alias:
 build), preview (state delta vs HEAD), status (one-screen program
-state), frontier, why (how a node was established / why it matters),
+state), frontier (holes grouped by the goals they serve, necessity
+first; --goal for one cone, --flat for the ungrouped list), why
+(derivation if established; decomposition + why-it-matters if open),
 context --budget (statement, derivation, routes, reusable claims, dead
 space in one bounded packet), search [--notes|--similar] (alias:
 relevant = search --similar), impact, lock/unlock (advisory TTL claims —
 identity-free: everyone is one team), site [--serve], telemetry. Claims
 are scheduler state, never committed into mathematical history.
+
+AGENT ERGONOMICS (each of these exists because transcripts showed the
+lack of it costing real work): line 1 of `why` is always
+`<id> [STATUS] — …` so `| head -1` learns something; query commands
+collapse graph warnings to one line (spam trains agents into
+`2>/dev/null`, which then eats real errors — `check` prints them all);
+`frontier` marks holes on EVERY live path to a goal with ★, prints the
+claim-path each hole unblocks, warns when a goal has no route-tree at
+all (that means route-finding, not lemma-proving), and annotates holes
+that resisted prior locked attempts.
 
 Exit categories (stable, for agents): 0 ok, 2 duplicate candidates,
 3 already claimed, 4 invalid graph, 64 usage error, 1 runtime error
@@ -89,7 +101,7 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 NON_NODE_FILES = {"README.md", "FRONTIER.md"}
 KINDS = ("claim", "route")
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 EXIT_OK, EXIT_DUP, EXIT_LEASE, EXIT_INVALID, EXIT_USAGE = 0, 2, 3, 4, 64
 
@@ -489,8 +501,10 @@ class Graph:
                       if self.routes[rid].status != "INVALIDATED"])
             for cid in self.claims}
 
+        self.unreachable_open = []
         for cid, c in self.claims.items():
             if c.status == "OPEN" and not c.reachable:
+                self.unreachable_open.append(cid)
                 self.errors.append(("warning", f"{c.relpath}: {cid} is open but unreachable from any root claim"))
         self._cycle_check()
 
@@ -540,11 +554,21 @@ def compile_graph(research_dir=RESEARCH_DIR, repo=REPO):
     return Graph(nodes, errors, repo), errors
 
 
-def report_errors(errors, fail_on_warning=False):
+def report_errors(errors, fail_on_warning=False, brief=False):
+    # brief (query commands): errors in full, warnings collapsed to one
+    # line. Re-printing every warning on every invocation trains agents
+    # to append 2>/dev/null, which then swallows real errors too.
     n = 0
+    warnings = [m for s, m in errors if s == "warning"]
+    collapse = brief and not fail_on_warning
     for sev, msg in errors:
+        if sev == "warning" and collapse:
+            continue
         print(f"{sev.upper()}: {msg}", file=sys.stderr)
         n += sev == "error" or (fail_on_warning and sev == "warning")
+    if collapse and warnings:
+        print(f"({len(warnings)} graph warning(s) — `cairn check` for details)",
+              file=sys.stderr)
     return n
 
 
@@ -705,7 +729,8 @@ def claim_line(c, graph, locks, width=52):
 
 def why_chain(graph, cid, limit=8):
     from collections import deque
-    prev, dq = {r: None for r in graph.roots}, deque(graph.roots)
+    anchors = sorted(set(graph.roots) | set(graph.goals))
+    prev, dq = {a: None for a in anchors}, deque(anchors)
     while dq:
         u = dq.popleft()
         if u == cid:
@@ -752,6 +777,125 @@ def derivation_lines(graph, cid, depth=0, seen=None):
     for q in reqs:
         out.extend(derivation_lines(graph, q, depth + 1, seen))
     return out
+
+
+def goal_cone(graph, gid):
+    """Claims on some live route-tree under `gid` — the set whose
+    resolution can move `gid` through the routes recorded so far."""
+    from collections import deque
+    seen, dq = {gid}, deque([gid])
+    while dq:
+        u = dq.popleft()
+        for rid in graph.routes_into.get(u, []):
+            r = graph.routes[rid]
+            if r.status == "INVALIDATED":
+                continue
+            for q in r.get_list("requires"):
+                if q in graph.claims and q not in seen:
+                    seen.add(q)
+                    dq.append(q)
+    return seen
+
+
+def chain_to(graph, gid, cid):
+    """Shortest live-route claim path cid -> ... -> gid, or None."""
+    from collections import deque
+    prev, dq = {gid: None}, deque([gid])
+    while dq:
+        u = dq.popleft()
+        if u == cid:
+            break
+        for rid in graph.routes_into.get(u, []):
+            r = graph.routes[rid]
+            if r.status == "INVALIDATED":
+                continue
+            for v in r.get_list("requires"):
+                if v in graph.claims and v not in prev:
+                    prev[v] = u
+                    dq.append(v)
+    if cid not in prev:
+        return None
+    path, cur = [cid], cid
+    while prev[cur] is not None:
+        cur = prev[cur]
+        path.append(cur)
+    return path
+
+
+def undecomposed_open(graph):
+    """Open claims with no live route into them — holes, independent of
+    root-reachability (a goal's cone may extend past the root cover)."""
+    out = []
+    for cid in sorted(graph.claims):
+        c = graph.claims[cid]
+        if c.status != "OPEN":
+            continue
+        if not any(graph.routes[rid].status != "INVALIDATED"
+                   for rid in graph.routes_into.get(cid, [])):
+            out.append(cid)
+    return out
+
+
+def frontier_view(graph, only_goal=None, with_necessity=True):
+    """Group the open holes by the goals they can serve.
+
+    Per goal: the holes on its live route-trees (its cone), which are
+    NECESSARY (granting every other hole still doesn't reach the goal —
+    the forced-solve run in reverse), and whether any complete
+    route-tree exists at all. Holes in no cone are 'elsewhere': real
+    work, but on no recorded path to a goal.
+    """
+    holes = undecomposed_open(graph)
+    hole_set = set(holes)
+    gids = [only_goal] if only_goal else graph.goals
+    goals, covered = [], set()
+    for gid in gids:
+        c = graph.claims[gid]
+        g = {"id": gid, "node_status": c.status, "holes": [],
+             "necessary": set(), "connected": None}
+        covered.add(gid)  # a goal is never 'elsewhere'; it gets its own section
+        if c.status == "OPEN":
+            cone = goal_cone(graph, gid)
+            cone_holes = [h for h in holes if h in cone and h != gid]
+            covered.update(cone_holes)
+            if cone_holes and with_necessity:
+                base, _, _, _ = graph._solve(forced=frozenset(holes))
+                g["connected"] = gid in base
+                if g["connected"]:
+                    for h in cone_holes:
+                        est, _, _, _ = graph._solve(forced=frozenset(hole_set - {h}))
+                        if gid not in est:
+                            g["necessary"].add(h)
+            g["holes"] = sorted(
+                cone_holes,
+                key=lambda h: (h not in g["necessary"], -graph.claim_impact[h], h))
+        goals.append(g)
+    elsewhere = sorted((h for h in graph.frontier if h not in covered),
+                       key=lambda h: (-graph.claim_impact[h], h))
+    return goals, elsewhere
+
+
+def lock_attempts():
+    """Successful lock acquisitions per node id, from telemetry. Advisory
+    color only — telemetry is uncommitted machine state and must never
+    affect compiled status."""
+    counts = {}
+    for e in read_telemetry():
+        if e.get("cmd") != "lock" or e.get("exit") != 0:
+            continue
+        argv, nid, i = e.get("argv", []), None, 1
+        while i < len(argv):
+            a = argv[i]
+            if a == "--ttl":
+                i += 2
+                continue
+            if isinstance(a, str) and not a.startswith("-"):
+                nid = a
+                break
+            i += 1
+        if nid:
+            counts[nid] = counts.get(nid, 0) + 1
+    return counts
 
 
 def notes_mentioning(nid, limit=5):
@@ -882,15 +1026,27 @@ def generate_frontier_md(graph, locks):
         L += [f"## {root} — {c.title}   [{c.status}]", "", "```text"]
         L += render_tree(graph, root, locks)
         L += ["```", ""]
+    serves = {}  # hole -> [(goal, necessary)] — which goals each hole can move
+    for g in frontier_view(graph)[0]:
+        for h in g["holes"]:
+            serves.setdefault(h, []).append((g["id"], h in g["necessary"]))
     L += ["## Frontier holes (open, reachable, undecomposed)", ""]
     if not graph.frontier:
         L.append("*(none)*")
-    for cid in sorted(graph.frontier, key=lambda q: -graph.claim_impact[q]):
+    for cid in sorted(graph.frontier,
+                      key=lambda q: (q not in serves, -graph.claim_impact[q])):
         c = graph.claims[cid]
         lock = locks.get(cid)
         who = f" — 🔒 claimed ({fmt_remaining(lock)})" if lock else " — unclaimed"
-        L.append(f"- **{cid}** [{graph.claim_impact[cid]} live route(s) need it] "
-                 f"[{c.title}]({cid}.md){who}")
+        if cid in serves:
+            toward = "; toward: " + ", ".join(
+                gid + (" **(necessary)**" if nec else "") for gid, nec in serves[cid])
+        elif cid in graph.goals:
+            toward = "; a goal with no routes yet — needs decomposition"
+        else:
+            toward = "; on no live path to a goal"
+        L.append(f"- **{cid}** [{graph.claim_impact[cid]} live route(s) need it"
+                 f"{toward}] [{c.title}]({cid}.md){who}")
     L += ["", "## Open internal claims (live decompositions exist)", ""]
     L += [f"- {cid} [{graph.claims[cid].title}]({cid}.md)" for cid in graph.internal_open]
     L += ["", "## Recently touched", ""]
@@ -1511,6 +1667,16 @@ def cmd_check(args):
                        f"(similarity {score}); if genuinely distinct, add to {cid}:\n"
                        f"  distinct_from:\n    {cand}: <why this is not that>"))
     nerr = report_errors(errors, fail_on_warning=args.strict)
+    if graph.unreachable_open:
+        print("to reconnect an unreachable claim: add a route from a reachable "
+              "claim to it, or mark it root: true if it is a genuine program "
+              "target. nearest reachable claims by similarity:", file=sys.stderr)
+        for cid in graph.unreachable_open:
+            near = [m.id for _, m in similar_nodes(
+                graph.claims[cid].title, graph.claims, limit=4, threshold=0.2,
+                exclude={cid}, min_overlap=1) if m.reachable][:2]
+            print(f"  {cid}" + (f" ~ {', '.join(near)}" if near else " ~ (none)"),
+                  file=sys.stderr)
     write_outputs(graph)
     print(f"compiled {len(graph.claims)} claims + {len(graph.routes)} routes -> "
           f".cairn/cache/graph.json, research/FRONTIER.md"
@@ -1567,19 +1733,73 @@ def cmd_preview(args):
 
 def cmd_frontier(args):
     graph, errors = compile_graph()
-    report_errors(errors)
+    report_errors(errors, brief=True)
     locks = all_locks()
-    holes = sorted(graph.frontier, key=lambda q: -graph.claim_impact[q])
+    only_goal = getattr(args, "goal", None)
+    if only_goal and only_goal not in graph.claims:
+        unknown_node(graph, only_goal)
+    flat_holes = sorted(graph.frontier, key=lambda q: -graph.claim_impact[q])
     payload = {"status": "ok", "frontier": [
         {"id": q, "title": graph.claims[q].title, "impact": graph.claim_impact[q],
-         "claimed": q in locks} for q in holes]}
-    human = "\n".join(claim_line(graph.claims[q], graph, locks) for q in holes)
-    return emit(args, payload, human)
+         "claimed": q in locks} for q in flat_holes]}
+    if getattr(args, "flat", False) or (not graph.goals and not only_goal):
+        human = "\n".join(claim_line(graph.claims[q], graph, locks) for q in flat_holes)
+        return emit(args, payload, human or "(no open holes)")
+
+    attempts = lock_attempts()
+    goals, elsewhere = frontier_view(graph, only_goal=only_goal)
+    L, payload["goals"] = [], []
+    for g in goals:
+        gid = g["id"]
+        c = graph.claims[gid]
+        L.append(f"TOWARD {gid} [{c.status}] — {c.title}")
+        gp = {"id": gid, "node_status": c.status, "connected": g["connected"],
+              "holes": []}
+        if c.status == "ESTABLISHED":
+            L.append("  ✓ established — nothing further needed")
+        elif not g["holes"]:
+            L += [f"  no live route-tree under it — no known path exists yet.",
+                  f"  The needed work is route-finding, not lemma-proving: "
+                  f"decompose it (`cairn why {gid}`)."]
+        else:
+            if g["connected"] is False:
+                L.append("  (no complete route-tree yet: resolving every hole below "
+                         "still doesn't reach the goal — a route is missing somewhere)")
+            for h in g["holes"]:
+                L.append("  " + claim_line(graph.claims[h], graph, locks))
+                notes = []
+                if h in g["necessary"]:
+                    notes.append(f"★ on every live path to {gid}")
+                path = chain_to(graph, gid, h)
+                if path and len(path) > 1:
+                    seg = path if len(path) <= 6 else path[:5] + ["…", path[-1]]
+                    notes.append("path: " + " -> ".join(seg))
+                prior = attempts.get(h, 0) - (1 if h in locks else 0)
+                if prior > 0:
+                    notes.append(f"{prior} prior attempt(s)"
+                                 + (" — consider decomposing instead of another "
+                                    "direct attack" if prior >= 2 else ""))
+                L += ["      " + x for x in notes]
+                gp["holes"].append({
+                    "id": h, "title": graph.claims[h].title,
+                    "impact": graph.claim_impact[h], "claimed": h in locks,
+                    "necessary": h in g["necessary"], "path_to_goal": path,
+                    "prior_attempts": max(prior, 0)})
+        payload["goals"].append(gp)
+        L.append("")
+    if elsewhere and not only_goal:
+        L.append("ELSEWHERE (on no live path to any goal)")
+        L += ["  " + claim_line(graph.claims[h], graph, locks) for h in elsewhere]
+        payload["elsewhere"] = [
+            {"id": h, "title": graph.claims[h].title,
+             "impact": graph.claim_impact[h], "claimed": h in locks}
+            for h in elsewhere]
+    return emit(args, payload, "\n".join(L).rstrip() or "(no open holes)")
 
 
 def cmd_context(args):
     graph, errors = compile_graph()
-    report_errors(errors)
+    report_errors(errors, brief=True)
     packet = context_packet(graph, args.id, all_locks(), args.budget)
     n = graph.nodes[args.id]
     return emit(args, {"status": "ok", "id": args.id, "kind": n.kind,
@@ -1651,15 +1871,23 @@ def cmd_impact(args):
 
 def cmd_lock(args):
     lock, holder = acquire_lock(args.id, parse_ttl(args.ttl))
+    locks = all_locks()
+    held = [{"id": nid, "expires_at": lk["expires_at"]}
+            for nid, lk in locks.items()]
+    roster = ("all active locks: "
+              + ", ".join(f"{nid} ({fmt_remaining(lk)})" for nid, lk in locks.items()))
     if lock is None:
         return emit(args, {"status": "claimed", "id": args.id,
-                           "expires_at": holder["expires_at"]},
-                    f"CLAIMED {args.id} — {fmt_remaining(holder)}",
+                           "expires_at": holder["expires_at"], "locks": held},
+                    f"CLAIMED {args.id} — {fmt_remaining(holder)}\n"
+                    f"(locks are identity-free; if this is your own earlier "
+                    f"lock it is still active)\n" + roster,
                     EXIT_LEASE)
     return emit(args, {"status": "locked", "id": args.id,
-                       "expires_at": lock["expires_at"]},
+                       "expires_at": lock["expires_at"], "locks": held},
                 f"LOCKED {args.id} "
-                f"expires={time.strftime('%H:%M:%S', time.localtime(lock['expires_at']))}")
+                f"expires={time.strftime('%H:%M:%S', time.localtime(lock['expires_at']))}"
+                f"\n" + roster)
 
 
 def cmd_unlock(args):
@@ -1671,7 +1899,7 @@ def cmd_unlock(args):
 
 def cmd_site(args):
     graph, errors = compile_graph()
-    report_errors(errors)
+    report_errors(errors, brief=True)
     out = generate_site(graph, all_locks())
     print(f"site -> {os.path.relpath(out, REPO)}/index.html")
     if args.serve:
@@ -1689,7 +1917,7 @@ def cmd_site(args):
 
 def cmd_status(args):
     graph, errors = compile_graph()
-    report_errors(errors)
+    report_errors(errors, brief=True)
     locks = all_locks()
     est = sum(1 for c in graph.claims.values() if c.status == "ESTABLISHED")
     L = [f"{len(graph.claims)} claims ({est} established) · "
@@ -1699,37 +1927,74 @@ def cmd_status(args):
         L.append("goals:")
         L += [f"  {gid} [{graph.claims[gid].status}] {graph.claims[gid].title}"
               for gid in graph.goals]
-    top = sorted(graph.frontier, key=lambda q: -graph.claim_impact[q])[:5]
+    # goal-cone holes first: agents should see the work that serves a
+    # goal before the merely well-connected work (necessity ranking and
+    # per-hole paths live in `cairn frontier`, which is allowed to be
+    # slower than status)
+    cone = set()
+    for gid in graph.goals:
+        if graph.claims[gid].status == "OPEN":
+            cone |= goal_cone(graph, gid)
+    toward = [q for q in graph.frontier if q in cone]
+    pool = toward or graph.frontier
+    top = sorted(pool, key=lambda q: -graph.claim_impact[q])[:5]
     if top:
-        L.append("frontier (top impact):")
+        L.append("frontier (toward goals — `cairn frontier` for the full view):"
+                 if toward else "frontier (top impact):")
         L += ["  " + claim_line(graph.claims[q], graph, locks) for q in top]
+    if graph.goals and not toward and any(
+            graph.claims[g].status == "OPEN" for g in graph.goals):
+        L.append("no frontier hole sits on a live path to any open goal — "
+                 "route-finding needed (`cairn frontier`)")
+    if locks:
+        L.append("active locks:")
+        L += [f"  🔒 {nid} — {fmt_remaining(lk)}" for nid, lk in locks.items()]
     payload = {"status": "ok", "claims": len(graph.claims), "established": est,
                "routes": len(graph.routes), "invalidated": len(graph.invalidated),
-               "frontier": len(graph.frontier),
+               "frontier": len(graph.frontier), "toward_goals": len(toward),
                "goals": [{"id": g, "node_status": graph.claims[g].status}
                          for g in graph.goals],
-               "claims": sorted(locks)}
+               "locks": sorted(locks)}
     return emit(args, payload, "\n".join(L))
 
 
 def cmd_why(args):
+    # Line 1 is always self-identifying (`<id> [STATUS] — …`): agents
+    # habitually pipe this through `head -1` and must learn something.
     graph, errors = compile_graph()
-    report_errors(errors)
+    report_errors(errors, brief=True)
     n = graph.nodes.get(args.id)
     if n is None:
         unknown_node(graph, args.id)
     L = []
     if n.kind == "route":
         reqs = n.get_list("requires")
-        L.append(f"{args.id} [{n.status}]: "
-                 f"{' AND '.join(reqs) if reqs else '(direct proof)'} "
+        L.append(f"{args.id} [{n.status}] route — {n.title}")
+        L.append(f"  {' AND '.join(reqs) if reqs else '(direct proof)'} "
                  f"=> {n.meta.get('target')}")
         L += ["  " + r for r in n.status_reasons]
     else:
         if n.status == "ESTABLISHED":
+            rid = graph.provenance.get(args.id)
+            L.append(f"{args.id} [ESTABLISHED"
+                     + (f" via {rid}" if rid else "") + f"] — {n.title}")
             L += ["derivation:"] + ["  " + x for x in derivation_lines(graph, args.id)]
         else:
-            L.append(f"{args.id} is OPEN")
+            L.append(f"{args.id} [OPEN] — {n.title}")
+            locks = all_locks()
+            live = [rid for rid in graph.routes_into.get(args.id, [])
+                    if graph.routes[rid].status != "INVALIDATED"]
+            if live:
+                L.append("decomposition (routes into it; ✓ = already in hand):")
+                L += ["  " + x for x in
+                      render_tree(graph, args.id, locks, max_depth=4)[1:]]
+            else:
+                L.append("frontier hole: no live routes into it — prove it directly "
+                         "(a route with requires: []) or decompose it with a new route")
+                for rid in graph.routes_into.get(args.id, []):
+                    r = graph.routes[rid]
+                    if r.status == "INVALIDATED":
+                        L.append(f"  dead: {rid} — {'; '.join(r.status_reasons)}")
         chain = why_chain(graph, args.id)
         if chain:
             L.append("why it matters: "
@@ -1851,8 +2116,13 @@ def main():
     ck.add_argument("--strict", action="store_true", help="fail on warnings")
     add("preview", "research-state delta of the working tree vs HEAD")
     add("status", "one-screen program state: goals, frontier, locks")
-    add("frontier", "unresolved claims worth attacking, with locks")
-    add("why", "how a node was established, or why it matters if open",
+    fr = add("frontier", "open holes grouped by the goals they serve "
+             "(necessity-ranked, with the path each hole unblocks)")
+    fr.add_argument("--goal", metavar="ID",
+                    help="restrict to holes on live paths into this claim")
+    fr.add_argument("--flat", action="store_true",
+                    help="ungrouped impact-ranked list (the pre-2.3 view)")
+    add("why", "derivation if established; decomposition + why-it-matters if open",
         node_id=True)
     cx = add("context", "bounded context packet (statement, derivation, routes, "
              "reusable claims, dead space)", node_id=True)
