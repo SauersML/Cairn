@@ -89,7 +89,7 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 NON_NODE_FILES = {"README.md", "FRONTIER.md"}
 KINDS = ("claim", "route")
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 EXIT_OK, EXIT_DUP, EXIT_LEASE, EXIT_INVALID, EXIT_USAGE = 0, 2, 3, 4, 64
 
@@ -1139,8 +1139,20 @@ for(const d of DATA.dead){
  for(const k of d.killers)if(byId[k])links.push({source:k,target:st.id,kind:'kill',dead:true});
 }
 for(const a of DATA.affinity)links.push({source:a.a,target:a.b,kind:'aff',w:a.w});
+// hierarchy: goals at depth 0, each claim at its derivation distance;
+// junctions and dead stubs sit mid-band, obstructions beside their kill,
+// anything unreachable parks in the bottom band
+const maxD=DATA.maxDepth||0;
+for(const n of nodes)
+ if(n.type==='junction'||n.type==='stub')
+  n.depth=(byId[n.tgt]&&byId[n.tgt].depth!=null?byId[n.tgt].depth:maxD)+0.5;
+for(const n of nodes)if(n.type==='stub')
+ for(const k of n.killers||[])if(byId[k]&&byId[k].depth==null)byId[k].depth=n.depth+0.5;
+for(const n of nodes)if(n.depth==null)n.depth=maxD+1;
 const real=l=>l.kind!=='aff';
 const svg=d3.select('#view'),W=svg.node().clientWidth,H=svg.node().clientHeight;
+const bandY=d=>70+(H-150)*(d.depth/(maxD+2));
+nodes.forEach(n=>{n.y=bandY(n);n.x=W/2+(Math.random()-.5)*W*.7});
 svg.append('defs').html('<marker id="m" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#7c8377"/></marker><marker id="mr" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#c0392b"/></marker>');
 const g=svg.append('g');
 svg.call(d3.zoom().scaleExtent([.25,3]).on('zoom',e=>g.attr('transform',e.transform)))
@@ -1151,8 +1163,8 @@ const linkForce=d3.forceLink(links).id(d=>d.id)
 const sim=d3.forceSimulation(nodes)
  .force('link',linkForce)
  .force('charge',d3.forceManyBody().strength(-430))
- .force('x',d3.forceX(W/2).strength(.06))
- .force('y',d3.forceY(H/2).strength(.09))
+ .force('x',d3.forceX(W/2).strength(.04))
+ .force('y',d3.forceY(bandY).strength(.5))
  .force('collide',d3.forceCollide(d=>d.type==='claim'?(d.goal?48:38):13));
 const line=g.selectAll('line').data(links.filter(real)).join('line')
  .attr('class',l=>'lk'+(l.kind==='kill'?' kill':'')+(l.dead?' dead':''))
@@ -1274,17 +1286,40 @@ def autolink(html_str, ids):
     return "".join(out)
 
 
+def goal_depths(graph):
+    """Derivation distance of each claim from the goal/root anchors,
+    through live routes only — the vertical hierarchy of the site."""
+    from collections import deque
+    anchors = sorted(set(graph.goals) | set(graph.roots))
+    depth = {a: 0 for a in anchors}
+    dq = deque(anchors)
+    while dq:
+        q = dq.popleft()
+        for rid in graph.routes_into.get(q, []):
+            r = graph.routes[rid]
+            if r.status == "INVALIDATED":
+                continue
+            for req in r.get_list("requires"):
+                if req in graph.claims and req not in depth:
+                    depth[req] = depth[q] + 1
+                    dq.append(req)
+    return depth
+
+
 def generate_site(graph, locks):
     os.makedirs(SITE_DIR, exist_ok=True)
     # index = the graph, full viewport
     idset = set(graph.nodes)
-    data = {"claims": [], "links": [], "junctions": [], "dead": [], "affinity": []}
+    depths = goal_depths(graph)
+    data = {"claims": [], "links": [], "junctions": [], "dead": [], "affinity": [],
+            "maxDepth": max(depths.values(), default=0)}
     for cid, c in graph.claims.items():
         data["claims"].append({
             "id": cid, "status": c.status, "root": bool(c.meta.get("root")),
             "goal": bool(c.meta.get("goal")),
             "title": c.title, "impact": graph.claim_impact.get(cid, 0),
             "frontier": cid in graph.frontier,
+            "depth": depths.get(cid),
             "lock": fmt_remaining(locks[cid]) if cid in locks else None,
             "html": autolink(md_to_html(c.body), idset)})
     for rid, r in graph.routes.items():

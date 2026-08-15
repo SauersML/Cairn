@@ -192,11 +192,14 @@ observability only and can never affect research state.
 
 ## The site
 
-`cairn site` renders a self-contained static site: an interactive
-force-directed graph of the whole program (goals ringed, established
-filled, failed routes dashed red and toggleable), a panel with frontier
-and library, per-node pages with statements, derivations, and dead
-space. **Live demo: <https://sauersml.github.io/Cairn/>** — a small
+`cairn site` renders a self-contained static site: an interactive graph
+of the whole program, laid out by the goal hierarchy — goals anchor the
+top band, every claim sits at its derivation distance from them, route
+junctions hang between their target and its prerequisites, failed routes
+(dashed red, toggleable) keep their obstructions beside them, and
+anything unreachable parks at the bottom. Goals ringed, established
+filled, plus a frontier/library panel and per-node pages with
+statements, derivations, and dead space. **Live demo: <https://sauersml.github.io/Cairn/>** — a small
 worked example, rebuilt by CI from scratch on every push.
 
 `cairn site --serve` previews it locally. Publish it with GitHub Pages:
