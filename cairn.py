@@ -28,18 +28,20 @@ CANONICAL vs NONCANONICAL:
                          searchable, but can NEVER change compiled state,
                          and canonical files may not cite it as justification.
 
-THE CLI is read-only over canonical files and deliberately small:
-check (compile+lint+dups, refreshes FRONTIER.md; alias: build), preview
-(state delta vs HEAD), status (one-screen program state), frontier,
-why (how a node was established / why it matters), context --budget
-(statement, derivation, routes, reusable claims, dead space in one
-bounded packet), search [--notes], relevant (similarity to an id or free
-text), impact, lock/unlock (TTL leases; re-run lock to extend), next
---lock, site, telemetry. Locks are scheduler state, never committed into
-mathematical history.
+THE CLI is read-only over canonical files and deliberately small —
+twelve commands: check (compile+lint+dups, refreshes FRONTIER.md; alias:
+build), preview (state delta vs HEAD), status (one-screen program
+state), frontier, why (how a node was established / why it matters),
+context --budget (statement, derivation, routes, reusable claims, dead
+space in one bounded packet), search [--notes|--similar] (alias:
+relevant = search --similar), impact, lock/unlock (advisory TTL claims —
+identity-free: everyone is one team), site [--serve], telemetry. Claims
+are scheduler state, never committed into mathematical history.
 
 Exit categories (stable, for agents): 0 ok, 2 duplicate candidates,
-3 lease conflict, 4 invalid graph. All query commands take --json.
+3 already claimed, 4 invalid graph, 64 usage error, 1 runtime error
+(unknown node, bad ttl). All query commands take --json, and with
+--json every outcome — including errors — is a JSON envelope on stdout.
 
 ROOT DISCOVERY: the project root is $CAIRN_ROOT if set, else the nearest
 ancestor of the working directory containing a research/ directory, else
@@ -87,7 +89,9 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 NON_NODE_FILES = {"README.md", "FRONTIER.md"}
 KINDS = ("claim", "route")
 
-EXIT_OK, EXIT_DUP, EXIT_LEASE, EXIT_INVALID = 0, 2, 3, 4
+__version__ = "2.1.0"
+
+EXIT_OK, EXIT_DUP, EXIT_LEASE, EXIT_INVALID, EXIT_USAGE = 0, 2, 3, 4, 64
 
 ALLOWED_KEYS = {
     "claim": {"rg", "id", "kind", "title", "root", "goal",
@@ -177,9 +181,14 @@ def parse_frontmatter(text, path):
         if key in meta:
             raise FrontmatterError(path, ln, f"duplicate key {key!r}")
         if rest:
-            if rest.startswith("[") and rest.endswith("]"):
+            if rest.startswith("["):
+                while not rest.endswith("]") and i + 1 < end:
+                    i += 1
+                    rest += " " + lines[i].strip()
+                if not rest.endswith("]"):
+                    raise FrontmatterError(path, ln, f"unterminated flow list for {key!r}")
                 meta[key] = _inline_list(rest)
-            elif rest.startswith(("{", "[", "|", ">", "&", "*")):
+            elif rest.startswith(("{", "|", ">", "&", "*")):
                 raise FrontmatterError(path, ln, f"unsupported YAML syntax: {rest!r}")
             else:
                 meta[key] = _scalar(rest)
@@ -296,9 +305,21 @@ def lint_nodes(nodes, errors, repo=REPO):
         if extra:
             errors.append(("error", f"{node.relpath}: unknown keys for {node.kind}: {sorted(extra)}"))
         for p in node.get_list("artifacts"):
-            if not isinstance(p, str) or not os.path.exists(os.path.join(repo, p)):
-                errors.append(("error", f"{node.relpath}: artifact path not found: {p}"))
-            elif p.startswith("notes/") or "/notes/" in p:
+            if not isinstance(p, str):
+                errors.append(("error", f"{node.relpath}: malformed artifact entry: {p!r}"))
+                continue
+            path_part = p
+            if not os.path.exists(os.path.join(repo, p)):
+                # a <rev>:<path> entry pins a file that left the working tree
+                pinned = (":" in p and subprocess.run(
+                    ["git", "-C", repo, "cat-file", "-e", p],
+                    capture_output=True).returncode == 0)
+                if not pinned:
+                    errors.append(("error", f"{node.relpath}: artifact not found: {p} "
+                                   "(want a working-tree path or a <rev>:<path> pin)"))
+                    continue
+                path_part = p.split(":", 1)[1]
+            if path_part.startswith("notes/") or "/notes/" in path_part:
                 errors.append(("error", f"{node.relpath}: canonical node cites noncanonical justification: {p}"))
         if node.kind == "claim":
             if node.meta.get("root") not in (None, True, False):
@@ -331,6 +352,19 @@ def lint_nodes(nodes, errors, repo=REPO):
                 errors.append(("error", f"{node.relpath}: duplicate entries in requires"))
             if isinstance(tgt, str) and tgt in reqs:
                 errors.append(("error", f"{node.relpath}: target appears in its own requires"))
+            # restatement dressed as reduction: a single-prerequisite route
+            # whose prerequisite reads like its target renames the problem
+            if (len(reqs) == 1 and reqs[0] in nodes and isinstance(tgt, str)
+                    and tgt in nodes):
+                a, b = nodes[reqs[0]], nodes[tgt]
+                t = _tokens(a.title + " " + a.id.replace("-", " "))
+                u = _tokens(b.title + " " + b.id.replace("-", " "))
+                inter = len(t & u)
+                if t and u and inter >= 3 and inter / min(len(t), len(u)) >= 0.75:
+                    errors.append(("warning", f"{node.relpath}: prerequisite {reqs[0]} "
+                                   f"reads like a restatement of target {tgt}; "
+                                   "if the route only renames the problem, replace the "
+                                   "prerequisite with one that can independently fail"))
 
 
 # ---------------------------------------------------------------------------
@@ -606,19 +640,16 @@ def all_locks():
     return out
 
 
-def default_agent(explicit):
-    return explicit or os.environ.get("CAIRN_AGENT") or os.environ.get("USER") or "anonymous"
-
-
-def acquire_lock(nid, agent, ttl_seconds):
+def acquire_lock(nid, ttl_seconds):
+    # Claims are identity-free and advisory: one team; TTL handles crashes.
     os.makedirs(LOCK_DIR, exist_ok=True)
     now = time.time()
-    payload = {"node": nid, "owner": agent, "acquired_at": now,
+    payload = {"node": nid, "acquired_at": now,
                "ttl_seconds": ttl_seconds, "expires_at": now + ttl_seconds}
     with open(os.path.join(LOCK_DIR, ".mutex"), "w") as mtx:
         fcntl.flock(mtx, fcntl.LOCK_EX)
         existing = read_lock(nid)
-        if existing and existing["owner"] != agent:
+        if existing:
             return None, existing
         tmp = _lock_path(nid) + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -645,8 +676,7 @@ def render_tree(graph, cid, locks, depth=0, seen=None, lines=None, max_depth=6):
         lines, seen = [], set()
     c = graph.claims[cid]
     ind = "  " * depth
-    lock = locks.get(cid)
-    lockmark = f" 🔒{lock['owner']}" if lock else ""
+    lockmark = " 🔒" if cid in locks else ""
     lines.append(f"{ind}{cid} [{MARK.get(c.status, c.status)}]{lockmark} {c.title}")
     if cid in seen or depth >= max_depth:
         if cid in seen:
@@ -668,7 +698,7 @@ def render_tree(graph, cid, locks, depth=0, seen=None, lines=None, max_depth=6):
 
 def claim_line(c, graph, locks, width=52):
     lock = locks.get(c.id)
-    lockmark = f"  🔒 {lock['owner']}" if lock else ""
+    lockmark = f"  🔒 {fmt_remaining(lock)}" if lock else ""
     title = c.title if len(c.title) <= width else c.title[:width - 1] + "…"
     return f"{c.id:<36}  {title:<{width}}  {MARK.get(c.status, c.status)}{lockmark}"
 
@@ -769,7 +799,7 @@ def context_packet(graph, nid, locks, budget_tokens=8000):
         head.append("GOAL: this claim is a top-level human goal of the program")
     lock = locks.get(nid)
     if lock:
-        head.append(f"LOCK: 🔒 {lock['owner']} ({fmt_remaining(lock)})")
+        head.append(f"LOCK: 🔒 claimed ({fmt_remaining(lock)}) — someone is on this")
     sec("", head)
     sec("STATEMENT", [n.body or "(no body)"])
 
@@ -858,7 +888,7 @@ def generate_frontier_md(graph, locks):
     for cid in sorted(graph.frontier, key=lambda q: -graph.claim_impact[q]):
         c = graph.claims[cid]
         lock = locks.get(cid)
-        who = f" — 🔒 `{lock['owner']}` ({fmt_remaining(lock)})" if lock else " — unclaimed"
+        who = f" — 🔒 claimed ({fmt_remaining(lock)})" if lock else " — unclaimed"
         L.append(f"- **{cid}** [{graph.claim_impact[cid]} live route(s) need it] "
                  f"[{c.title}]({cid}.md){who}")
     L += ["", "## Open internal claims (live decompositions exist)", ""]
@@ -868,8 +898,8 @@ def generate_frontier_md(graph, locks):
     for n in recent:
         day = time.strftime("%Y-%m-%d", time.localtime(os.path.getmtime(n.path)))
         L.append(f"- {day} · {n.id} [{n.status}] {n.title}")
-    L += ["", "## Active locks", ""]
-    L += [f"- 🔒 {nid} — `{lk['owner']}`, {fmt_remaining(lk)}"
+    L += ["", "## Active claims", ""]
+    L += [f"- 🔒 {nid} — {fmt_remaining(lk)}"
           for nid, lk in locks.items()] or ["*(none)*"]
     L.append("")
     return "\n".join(L)
@@ -1075,7 +1105,7 @@ function frontierHome(){
  }
  h+='<h3 class="sec">Frontier</h3><ul class="fr">';
  for(const c of DATA.claims.filter(c=>c.frontier).sort((a,b)=>b.impact-a.impact))
-  h+=`<li data-id="${c.id}">${esc(c.title)}<br><span class="imp">${c.id} &middot; ${c.impact} live route(s)${c.lock?' &middot; locked by '+esc(c.lock):''}</span></li>`;
+  h+=`<li data-id="${c.id}">${esc(c.title)}<br><span class="imp">${c.id} &middot; ${c.impact} live route(s)${c.lock?' &middot; claimed ('+esc(c.lock)+')':''}</span></li>`;
  h+='</ul>';
  const lib=DATA.claims.filter(c=>c.status==='ESTABLISHED').sort((a,b)=>a.title.localeCompare(b.title));
  h+=`<details><summary>Library &mdash; ${lib.length} established</summary><ul class="fr">`;
@@ -1179,7 +1209,7 @@ function show(d){
  if(d.type==='claim'){
   pbody.innerHTML=`${d.goal?'<span class="chip goal">GOAL</span> ':''}<span class="chip ${d.status}">${d.status}</span>
    <h2>${esc(d.title)}</h2><code>${d.id}</code>
-   ${d.lock?`<p class="hint">locked by ${esc(d.lock)}</p>`:''}
+   ${d.lock?`<p class="hint">claimed (${esc(d.lock)})</p>`:''}
    <div class="stmt">${d.html||'(no statement)'}</div>
    <p><a class="open-page" href="${d.id}.html">open page &#8594;</a></p>`;
  }else{
@@ -1224,7 +1254,7 @@ refreshVis();
 
 def autolink(html_str, ids):
     """Hyperlink every mention of a known node id in already-rendered HTML."""
-    pat = re.compile(r"[a-z0-9][a-z0-9-]{3,63}")
+    pat = re.compile(r"[a-z0-9][a-z0-9-]{1,63}")
     parts = re.split(r"(<[^>]+>)", html_str)
     out, in_a = [], 0
     for part in parts:
@@ -1255,7 +1285,7 @@ def generate_site(graph, locks):
             "goal": bool(c.meta.get("goal")),
             "title": c.title, "impact": graph.claim_impact.get(cid, 0),
             "frontier": cid in graph.frontier,
-            "lock": locks.get(cid, {}).get("owner"),
+            "lock": fmt_remaining(locks[cid]) if cid in locks else None,
             "html": autolink(md_to_html(c.body), idset)})
     for rid, r in graph.routes.items():
         tgt = r.meta.get("target")
@@ -1318,7 +1348,7 @@ def generate_site(graph, locks):
     est = sum(1 for c in graph.claims.values() if c.status == "ESTABLISHED")
     stats = (f"{len(graph.claims)} claims · {est} established · "
              f"{len(graph.routes)} routes · {len(graph.frontier)} frontier holes")
-    idx = (INDEX_TMPL.replace("__DATA__", json.dumps(data))
+    idx = (INDEX_TMPL.replace("__DATA__", json.dumps(data).replace("</", "<\\/"))
                      .replace("__STATS__", html.escape(stats)))
     with open(os.path.join(SITE_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(idx)
@@ -1342,7 +1372,7 @@ def generate_site(graph, locks):
             B.append("<p class='muted'>" + html.escape("; ".join(n.status_reasons)) + "</p>")
         lock = locks.get(nid)
         if lock:
-            B.append(f"<p>🔒 {html.escape(lock['owner'])} ({fmt_remaining(lock)})</p>")
+            B.append(f"<p>🔒 claimed ({fmt_remaining(lock)})</p>")
         def rel(title_, ids):
             ids = [i for i in ids if i in graph.nodes]
             if ids:
@@ -1452,7 +1482,7 @@ def cmd_check(args):
           + ("" if errors else " — check clean"))
     if not nerr:
         return EXIT_OK
-    non_dup_errors = nerr - (len(dups) if args.changed else 0)
+    non_dup_errors = nerr - (len(dups) if (args.changed or args.strict) else 0)
     return EXIT_INVALID if non_dup_errors > 0 else EXIT_DUP
 
 
@@ -1507,7 +1537,7 @@ def cmd_frontier(args):
     holes = sorted(graph.frontier, key=lambda q: -graph.claim_impact[q])
     payload = {"status": "ok", "frontier": [
         {"id": q, "title": graph.claims[q].title, "impact": graph.claim_impact[q],
-         "locked_by": locks.get(q, {}).get("owner")} for q in holes]}
+         "claimed": q in locks} for q in holes]}
     human = "\n".join(claim_line(graph.claims[q], graph, locks) for q in holes)
     return emit(args, payload, human)
 
@@ -1523,6 +1553,17 @@ def cmd_context(args):
 
 def cmd_search(args):
     graph, errors = compile_graph()
+    if args.cmd == "relevant" or args.similar:
+        n = graph.nodes.get(args.query)
+        text = (n.title + " " + n.body[:400]) if n else args.query
+        hits = similar_nodes(text, graph.nodes, limit=args.limit, threshold=0.2,
+                             exclude={args.query}, min_overlap=1)
+        payload = {"status": "ok", "results": [
+            {"id": m.id, "kind": m.kind, "node_status": m.status,
+             "title": m.title, "score": s} for s, m in hits]}
+        human = "\n".join(f"{m.id:<44} [{m.kind}/{m.status}] {m.title}"
+                          for _, m in hits) or "(nothing similar)"
+        return emit(args, payload, human)
     q = _tokens(args.query)
     scored = []
     for n in graph.nodes.values():
@@ -1574,60 +1615,40 @@ def cmd_impact(args):
 
 
 def cmd_lock(args):
-    agent = default_agent(args.agent)
-    lock, holder = acquire_lock(args.id, agent, parse_ttl(args.ttl))
+    lock, holder = acquire_lock(args.id, parse_ttl(args.ttl))
     if lock is None:
-        return emit(args, {"status": "lease_conflict", "id": args.id,
-                           "owner": holder["owner"], "expires_at": holder["expires_at"]},
-                    f"LOCK BUSY {args.id} — held by {holder['owner']} ({fmt_remaining(holder)})",
+        return emit(args, {"status": "claimed", "id": args.id,
+                           "expires_at": holder["expires_at"]},
+                    f"CLAIMED {args.id} — {fmt_remaining(holder)}",
                     EXIT_LEASE)
-    return emit(args, {"status": "locked", "id": args.id, "owner": agent,
+    return emit(args, {"status": "locked", "id": args.id,
                        "expires_at": lock["expires_at"]},
-                f"LOCKED {args.id} owner={agent} "
+                f"LOCKED {args.id} "
                 f"expires={time.strftime('%H:%M:%S', time.localtime(lock['expires_at']))}")
 
 
 def cmd_unlock(args):
-    existing = read_lock(args.id)
-    if existing is None:
+    if read_lock(args.id) is None:
         return emit(args, {"status": "unlocked", "id": args.id}, f"no active lock on {args.id}")
-    agent = default_agent(args.agent)
-    if existing["owner"] != agent and not args.force:
-        return emit(args, {"status": "lease_conflict", "id": args.id,
-                           "owner": existing["owner"]},
-                    f"lock owned by {existing['owner']}, not {agent}; --force to break",
-                    EXIT_LEASE)
     os.unlink(_lock_path(args.id))
     return emit(args, {"status": "unlocked", "id": args.id}, f"UNLOCKED {args.id}")
-
-
-def cmd_next(args):
-    graph, errors = compile_graph()
-    report_errors(errors)
-    locks = all_locks()
-    cands = [q for q in graph.frontier if q not in locks]
-    if not cands:
-        return emit(args, {"status": "empty"}, "no unclaimed frontier holes", EXIT_LEASE)
-    cands.sort(key=lambda q: (-graph.claim_impact[q], q))
-    q = cands[0]
-    locked = None
-    if args.lock:
-        agent = default_agent(args.agent)
-        locked, holder = acquire_lock(q, agent, parse_ttl(args.ttl))
-        if locked is None:
-            return emit(args, {"status": "lease_conflict", "id": q, "owner": holder["owner"]},
-                        f"LOCK BUSY {q}", EXIT_LEASE)
-    packet = context_packet(graph, q, all_locks(), args.budget)
-    payload = {"status": "ok", "id": q, "title": graph.claims[q].title,
-               "impact": graph.claim_impact[q], "locked": bool(locked), "packet": packet}
-    human = (f"LOCKED {q}\n" if locked else "") + packet
-    return emit(args, payload, human)
 
 
 def cmd_site(args):
     graph, errors = compile_graph()
     report_errors(errors)
-    print(f"site -> {os.path.relpath(generate_site(graph, all_locks()), REPO)}/index.html")
+    out = generate_site(graph, all_locks())
+    print(f"site -> {os.path.relpath(out, REPO)}/index.html")
+    if args.serve:
+        import functools
+        from http.server import HTTPServer, SimpleHTTPRequestHandler
+        handler = functools.partial(SimpleHTTPRequestHandler, directory=out)
+        srv = HTTPServer(("127.0.0.1", args.port), handler)
+        print(f"serving http://127.0.0.1:{args.port}/  (Ctrl-C to stop)")
+        try:
+            srv.serve_forever()
+        except KeyboardInterrupt:
+            pass
     return EXIT_OK
 
 
@@ -1638,7 +1659,7 @@ def cmd_status(args):
     est = sum(1 for c in graph.claims.values() if c.status == "ESTABLISHED")
     L = [f"{len(graph.claims)} claims ({est} established) · "
          f"{len(graph.routes)} routes ({len(graph.invalidated)} invalidated) · "
-         f"{len(graph.frontier)} frontier holes · {len(locks)} active locks"]
+         f"{len(graph.frontier)} frontier holes · {len(locks)} active claims"]
     if graph.goals:
         L.append("goals:")
         L += [f"  {gid} [{graph.claims[gid].status}] {graph.claims[gid].title}"
@@ -1652,7 +1673,7 @@ def cmd_status(args):
                "frontier": len(graph.frontier),
                "goals": [{"id": g, "node_status": graph.claims[g].status}
                          for g in graph.goals],
-               "locks": {k: v["owner"] for k, v in locks.items()}}
+               "claims": sorted(locks)}
     return emit(args, payload, "\n".join(L))
 
 
@@ -1687,19 +1708,6 @@ def cmd_why(args):
     return emit(args, payload, "\n".join(L))
 
 
-def cmd_relevant(args):
-    graph, errors = compile_graph()
-    report_errors(errors)
-    n = graph.nodes.get(args.query)
-    text = (n.title + " " + n.body[:400]) if n else args.query
-    hits = similar_nodes(text, graph.nodes, limit=args.limit, threshold=0.2,
-                         exclude={args.query}, min_overlap=1)
-    payload = {"status": "ok", "results": [
-        {"id": m.id, "kind": m.kind, "node_status": m.status,
-         "title": m.title, "score": s} for s, m in hits]}
-    human = "\n".join(f"{m.id:<44} [{m.kind}/{m.status}] {m.title}"
-                      for _, m in hits) or "(nothing similar)"
-    return emit(args, payload, human)
 
 
 # ---------------------------------------------------------------------------
@@ -1712,8 +1720,7 @@ def cmd_relevant(args):
 def record_telemetry(cmd, argv, code, ms):
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
-        entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                 "agent": default_agent(None), "cmd": cmd,
+        entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "cmd": cmd,
                  "argv": argv, "exit": code, "ms": ms}
         with open(TELEMETRY, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
@@ -1741,21 +1748,20 @@ def cmd_telemetry(args):
         tail = entries[-args.tail:]
         payload = {"status": "ok", "entries": tail}
         human = "\n".join(
-            f"{e['ts']}  {e.get('agent','?'):<12} {e['cmd']:<10} "
+            f"{e['ts']}  {e['cmd']:<10} "
             f"exit={e['exit']} {e['ms']}ms  {' '.join(map(str, e.get('argv', [])))}"
             for e in tail) or "(no telemetry)"
         return emit(args, payload, human)
     if not entries:
         return emit(args, {"status": "ok", "total": 0}, "(no telemetry yet)")
-    per_cmd, per_agent, per_exit = {}, {}, {}
+    per_cmd, per_exit = {}, {}
     for e in entries:
         c = per_cmd.setdefault(e["cmd"], {"n": 0, "errors": 0, "ms": []})
         c["n"] += 1
         c["errors"] += e["exit"] != 0
         c["ms"].append(e.get("ms", 0))
-        per_agent[e.get("agent", "?")] = per_agent.get(e.get("agent", "?"), 0) + 1
         per_exit[str(e["exit"])] = per_exit.get(str(e["exit"]), 0) + 1
-    unused = sorted(set(COMMANDS) - {"telemetry", "build"} - set(per_cmd))
+    unused = sorted(set(COMMANDS) - {"telemetry", "build", "relevant"} - set(per_cmd))
     L = [f"{len(entries)} invocations, {entries[0]['ts']} .. {entries[-1]['ts']}", "",
          f"{'command':<12} {'n':>5} {'errs':>5} {'med ms':>7}"]
     stats = {}
@@ -1764,13 +1770,11 @@ def cmd_telemetry(args):
         med = sorted(c["ms"])[len(c["ms"]) // 2]
         stats[cmd] = {"n": c["n"], "errors": c["errors"], "median_ms": med}
         L.append(f"{cmd:<12} {c['n']:>5} {c['errors']:>5} {med:>7}")
-    L += ["", "exit codes: " + ", ".join(f"{k}: {v}" for k, v in sorted(per_exit.items())),
-          "agents:     " + ", ".join(f"{k}: {v}" for k, v in
-                                     sorted(per_agent.items(), key=lambda x: -x[1]))]
+    L += ["", "exit codes: " + ", ".join(f"{k}: {v}" for k, v in sorted(per_exit.items()))]
     if unused:
         L += ["", "never used (candidates to rethink or cut): " + ", ".join(unused)]
     payload = {"status": "ok", "total": len(entries), "per_command": stats,
-               "per_agent": per_agent, "per_exit": per_exit, "never_used": unused}
+               "per_exit": per_exit, "never_used": unused}
     return emit(args, payload, "\n".join(L))
 
 
@@ -1781,18 +1785,26 @@ def main():
     COMMANDS.update({
         "check": cmd_check, "build": cmd_check, "preview": cmd_preview,
         "status": cmd_status, "frontier": cmd_frontier, "why": cmd_why,
-        "context": cmd_context, "search": cmd_search, "relevant": cmd_relevant,
+        "context": cmd_context, "search": cmd_search, "relevant": cmd_search,
         "impact": cmd_impact, "lock": cmd_lock, "unlock": cmd_unlock,
-        "next": cmd_next, "site": cmd_site, "telemetry": cmd_telemetry})
-    p = argparse.ArgumentParser(prog="cairn", description=__doc__.split("\n")[0])
+        "site": cmd_site, "telemetry": cmd_telemetry})
+    class Parser(argparse.ArgumentParser):
+        def error(self, message):  # usage errors must not collide with exit 2
+            self.print_usage(sys.stderr)
+            self.exit(EXIT_USAGE, f"{self.prog}: error: {message}\n")
+
+    p = Parser(prog="cairn", description=__doc__.split("\n")[0],
+               epilog="exit codes: 0 ok · 2 duplicate candidates · "
+                      "3 already claimed · 4 invalid graph · 64 usage · "
+                      "1 runtime error. Env: CAIRN_ROOT overrides "
+                      "project-root discovery.")
+    p.add_argument("--version", action="version", version=f"cairn {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    def add(name, help_, *, jsonable=True, agent=False, node_id=False, aliases=()):
+    def add(name, help_, *, jsonable=True, node_id=False, aliases=()):
         sp = sub.add_parser(name, help=help_, aliases=list(aliases))
         if jsonable:
             sp.add_argument("--json", action="store_true")
-        if agent:
-            sp.add_argument("--agent")
         if node_id:
             sp.add_argument("id")
         return sp
@@ -1807,29 +1819,32 @@ def main():
     add("frontier", "unresolved claims worth attacking, with locks")
     add("why", "how a node was established, or why it matters if open",
         node_id=True)
-    rv = add("relevant", "nodes similar to a node id or to free text")
-    rv.add_argument("query")
-    rv.add_argument("--limit", type=int, default=10)
     cx = add("context", "bounded context packet (statement, derivation, routes, "
              "reusable claims, dead space)", node_id=True)
     cx.add_argument("--budget", type=int, default=8000, help="approx token budget")
-    se = add("search", "lexical search over the graph (and notes/)")
+    se = add("search", "lexical search over the graph (and notes/); "
+             "--similar ranks by similarity to a node id or free text",
+             aliases=("relevant",))
     se.add_argument("query")
     se.add_argument("--limit", type=int, default=10)
     se.add_argument("--notes", action="store_true")
+    se.add_argument("--similar", action="store_true",
+                    help="similarity mode (what `relevant` implies)")
     add("impact", "what would change if this claim were established", node_id=True)
-    lk = add("lock", "acquire a TTL work lock (re-run to extend)", agent=True, node_id=True)
+    lk = add("lock", "claim a hole for --ttl (advisory; everyone is one team)",
+             node_id=True)
     lk.add_argument("--ttl", default="45m")
-    ul = add("unlock", "release a lock", agent=True, node_id=True)
-    ul.add_argument("--force", action="store_true")
-    nx = add("next", "highest-impact unclaimed frontier claim", agent=True)
-    nx.add_argument("--lock", action="store_true")
-    nx.add_argument("--ttl", default="45m")
-    nx.add_argument("--budget", type=int, default=8000)
-    add("site", "generate the static HTML site", jsonable=False)
+    add("unlock", "release a claim", node_id=True)
+    st = add("site", "generate the static HTML site", jsonable=False)
+    st.add_argument("--serve", action="store_true",
+                    help="serve the generated site locally")
+    st.add_argument("--port", type=int, default=8000)
     tl = add("telemetry", "usage summary: what agents actually run")
     tl.add_argument("--tail", type=int, help="show the last N raw entries")
 
+    if len(sys.argv) == 1:
+        p.print_help()
+        sys.exit(EXIT_USAGE)
     args = p.parse_args()
     fn = COMMANDS[args.cmd]
     t0 = time.time()
@@ -1839,6 +1854,11 @@ def main():
         code = e.code if isinstance(e, SystemExit) and isinstance(e.code, int) else 1
         if args.cmd != "telemetry":
             record_telemetry(args.cmd, sys.argv[1:], code, int((time.time() - t0) * 1000))
+        if (isinstance(e, SystemExit) and isinstance(e.code, str)
+                and getattr(args, "json", False)):
+            print(json.dumps({"status": "error", "error": e.code}, indent=1))
+            print(e.code, file=sys.stderr)
+            sys.exit(1)
         raise
     if args.cmd != "telemetry":
         record_telemetry(args.cmd, sys.argv[1:], code, int((time.time() - t0) * 1000))

@@ -1,0 +1,207 @@
+# Live demo site: scaffold a small worked example (two classic tiling
+# results) and publish the rendered graph to GitHub Pages. The example
+# lives only here, so the repo tree stays free of demo clutter; it
+# exercises every visual state: an established goal, an invalidated
+# route with its obstruction, and an open goal with a frontier hole.
+name: Demo site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: demo-site
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    name: Render the demo graph
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Scaffold the demo project
+        run: |
+          mkdir -p demo/research
+          cat > demo/research/mutilated-board-untileable.md <<'EOF'
+          ---
+          rg: 2
+          id: mutilated-board-untileable
+          kind: claim
+          title: The mutilated chessboard admits no domino tiling
+          root: true
+          goal: true
+          ---
+
+          Remove two diagonally opposite corner squares from an 8×8
+          chessboard. The remaining 62 squares cannot be exactly covered
+          by 31 non-overlapping 2×1 dominoes.
+          EOF
+          cat > demo/research/domino-color-balance.md <<'EOF'
+          ---
+          rg: 2
+          id: domino-color-balance
+          kind: claim
+          title: Every domino covers one dark and one light square
+          ---
+
+          Under the standard coloring, any 2×1 domino covers exactly one
+          dark square and exactly one light square.
+          EOF
+          cat > demo/research/mutilated-board-color-count.md <<'EOF'
+          ---
+          rg: 2
+          id: mutilated-board-color-count
+          kind: claim
+          title: Opposite corners share a color, leaving a 32–30 imbalance
+          ---
+
+          Diagonally opposite corners have the same color, so removing
+          both leaves 32 squares of one color and 30 of the other.
+          EOF
+          cat > demo/research/via-color-counting.md <<'EOF'
+          ---
+          rg: 2
+          id: via-color-counting
+          kind: route
+          title: Color-counting argument
+          target: mutilated-board-untileable
+          requires: [domino-color-balance,
+                     mutilated-board-color-count]
+          ---
+
+          A tiling by 31 dominoes would cover 31 dark and 31 light
+          squares (domino-color-balance), but the region has 32 and 30
+          (mutilated-board-color-count). Contradiction.
+          EOF
+          cat > demo/research/prove-color-balance.md <<'EOF'
+          ---
+          rg: 2
+          id: prove-color-balance
+          kind: route
+          title: Direct proof by adjacency
+          target: domino-color-balance
+          requires: []
+          ---
+
+          A domino covers two edge-adjacent squares, and the coloring
+          assigns adjacent squares opposite colors.
+          EOF
+          cat > demo/research/prove-color-count.md <<'EOF'
+          ---
+          rg: 2
+          id: prove-color-count
+          kind: route
+          title: Direct computation of the color census
+          target: mutilated-board-color-count
+          requires: []
+          ---
+
+          Corners (1,1) and (8,8) share the parity of row + column, so
+          they share a color; the full board has 32 of each.
+          EOF
+          cat > demo/research/brute-force-enumeration.md <<'EOF'
+          ---
+          rg: 2
+          id: brute-force-enumeration
+          kind: route
+          title: Claimed exhaustive enumeration of all partial tilings
+          target: mutilated-board-untileable
+          requires: []
+          ---
+
+          Asserted a complete by-hand case analysis. The obstruction
+          claim shows the case count was fatally undercounted; the route
+          stays in the graph as a record of dead space.
+          EOF
+          cat > demo/research/enumeration-lower-bound.md <<'EOF'
+          ---
+          rg: 2
+          id: enumeration-lower-bound
+          kind: claim
+          title: Exhaustive enumeration exceeds any feasible case budget
+          invalidates: [brute-force-enumeration]
+          ---
+
+          Partial domino placements on the region number far beyond what
+          any by-hand analysis can cover, so a claimed exhaustive
+          enumeration cannot have been complete.
+          EOF
+          cat > demo/research/prove-enumeration-lower-bound.md <<'EOF'
+          ---
+          rg: 2
+          id: prove-enumeration-lower-bound
+          kind: route
+          title: Counting bound on partial placements
+          target: enumeration-lower-bound
+          requires: []
+          ---
+
+          A crude product bound over rows gives well over 10^12 partial
+          placements.
+          EOF
+          cat > demo/research/deficient-board-tromino-tiling.md <<'EOF'
+          ---
+          rg: 2
+          id: deficient-board-tromino-tiling
+          kind: claim
+          title: One-square-deficient power-of-two boards are L-tromino tileable
+          root: true
+          goal: true
+          ---
+
+          For every n ≥ 1, a 2^n × 2^n board with any single square
+          removed can be exactly covered by L-trominoes.
+          EOF
+          cat > demo/research/quadrant-induction-step.md <<'EOF'
+          ---
+          rg: 2
+          id: quadrant-induction-step
+          kind: claim
+          title: The quadrant split preserves the induction hypothesis
+          ---
+
+          Place one central L-tromino covering a cell of each quadrant
+          not containing the removed square; each quadrant becomes a
+          half-size instance. Open in this demo: prove it carefully.
+          EOF
+          cat > demo/research/via-quadrant-induction.md <<'EOF'
+          ---
+          rg: 2
+          id: via-quadrant-induction
+          kind: route
+          title: Induction on n via the quadrant split
+          target: deficient-board-tromino-tiling
+          requires: [quadrant-induction-step]
+          ---
+
+          Induct on n: the 2×2 base case is a single L-tromino by
+          inspection, and quadrant-induction-step supplies the step.
+          EOF
+
+      - name: Compile strictly and render
+        working-directory: demo
+        run: |
+          ../bin/cairn check --strict
+          ../bin/cairn site
+
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: demo/.cairn/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

@@ -1,5 +1,6 @@
 # Self-test: scaffold the README quick-start project, drive it through
-# the open -> established transition, and exercise every query command.
+# the open -> established transition, and pin down the CLI contract
+# agents rely on (exit codes, JSON envelopes, aliases, lease identity).
 name: CI
 
 on:
@@ -64,16 +65,55 @@ jobs:
           ../bin/cairn impact key-lemma | grep main-conjecture
           ../bin/cairn context main-conjecture --budget 2000
           ../bin/cairn relevant main-conjecture
+          ../bin/cairn search --similar "conjecture of the program"
           ../bin/cairn search "key lemma"
           ../bin/cairn site
           test -f .cairn/site/index.html
 
-      - name: Unknown ids fail with suggestions; unitless TTLs fail
+      - name: CLI contract — exit codes, envelopes, suggestions
         working-directory: t
         run: |
-          ! ../bin/cairn why kee-lemma
+          ../bin/cairn --version
+          code=0; ../bin/cairn bogus-command 2>/dev/null || code=$?
+          [ "$code" -eq 64 ]
+          code=0; ../bin/cairn 2>/dev/null >/dev/null || code=$?
+          [ "$code" -eq 64 ]
+          code=0; ../bin/cairn why kee-lemma 2>/dev/null || code=$?
+          [ "$code" -eq 1 ]
           ../bin/cairn why kee-lemma 2>&1 | grep "nearest: key-lemma"
-          ! ../bin/cairn lock key-lemma --ttl 10800
+          ../bin/cairn why kee-lemma --json | grep '"status": "error"'
+          code=0; ../bin/cairn lock key-lemma --ttl 10800 2>/dev/null || code=$?
+          [ "$code" -eq 1 ]
+
+      - name: Claims — advisory, identity-free
+        working-directory: t
+        run: |
+          ../bin/cairn lock key-lemma --ttl 5m
+          code=0; ../bin/cairn lock key-lemma --ttl 5m || code=$?
+          [ "$code" -eq 3 ]
+          ../bin/cairn frontier | grep 🔒
+          ../bin/cairn unlock key-lemma
+          ../bin/cairn unlock key-lemma
+          ../bin/cairn lock key-lemma --ttl 5m
+          ../bin/cairn unlock key-lemma
+
+      - name: Wrapped flow lists compile
+        working-directory: t
+        run: |
+          cat > research/via-key-lemma.md <<'EOF'
+          ---
+          rg: 2
+          id: via-key-lemma
+          kind: route
+          title: Reduce the conjecture to the key lemma
+          target: main-conjecture
+          requires: [
+            key-lemma]
+          ---
+
+          Why the lemma implies the conjecture.
+          EOF
+          ../bin/cairn check --strict
 
       - name: Establish the lemma and watch the goal flip
         working-directory: t
@@ -94,7 +134,17 @@ jobs:
           ../bin/cairn why main-conjecture | grep "via via-key-lemma"
           ../bin/cairn status --json | grep '"established": 2'
 
+      - name: site --serve answers HTTP
+        working-directory: t
+        run: |
+          ../bin/cairn site --serve --port 8917 & SRV=$!
+          sleep 2
+          curl -sf http://127.0.0.1:8917/index.html > /dev/null
+          curl -sf http://127.0.0.1:8917/main-conjecture.html > /dev/null
+          kill $SRV
+
       - name: pip install
         run: |
           python3 -m pip install --quiet .
+          cairn --version
           cd t && cairn check --strict

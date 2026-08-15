@@ -131,21 +131,29 @@ frontier   unresolved claims worth attacking, highest impact first
 why ID     how a node was established (derivation), or why it matters if open
 context ID bounded packet for one node: statement, derivation, routes in/out,
            reusable established claims, nearby failed space (--budget tokens)
-search Q   lexical search over the graph (--notes to include notes/)
-relevant Q nodes similar to a node id or to free text
+search Q   lexical search over the graph (--notes to include notes/);
+           --similar ranks by similarity to an id or text   alias: relevant
 impact ID  what would flip if this claim were established
-lock ID    acquire a TTL work lease (--ttl 45m; re-run to extend)
-unlock ID  release it (--force to break another owner's)
-next       highest-impact unclaimed frontier claim (--lock to claim it)
-site       static HTML site into .cairn/site/
+lock ID    claim a hole for --ttl 45m (advisory, identity-free)
+unlock ID  release a claim
+site       static HTML site into .cairn/site/ (--serve to preview locally)
 telemetry  usage summary: what workers actually run, and what they never touch
 ```
 
-Unknown node ids fail with nearest-id suggestions; lock TTLs require an
-explicit unit (`900s`, `45m`, `2h`) so a bare number can never silently
-mean the wrong timescale. Several commands (`status`, `why`, `relevant`,
-the `build` alias) exist because usage telemetry showed workers reaching
-for them — `telemetry` closes that loop for your own deployment.
+Exit codes are stable for scripting: `0` ok, `2` duplicate candidates,
+`3` already claimed, `4` invalid graph, `64` usage error, `1` runtime
+error (unknown node, bad TTL). Every query command takes `--json`, and
+with `--json` even errors arrive as a JSON envelope on stdout — a
+harness never has to parse prose. `cairn --help` carries the exit-code
+table; `cairn --version` exists; a bare `cairn` prints full help.
+
+The surface is telemetry-governed, both directions: `status`, `why`,
+`relevant`, and the `build` alias exist because recorded usage showed
+workers reaching for those exact names, and a `next` command was cut
+after hundreds of invocations never touched it. Unknown node ids fail
+with nearest-id suggestions; lock TTLs require an explicit unit (`900s`,
+`45m`, `2h`) so a bare number can never silently mean the wrong
+timescale. `telemetry` closes the same loop for your own deployment.
 
 Exit codes are stable for scripting: `0` ok, `2` duplicate candidates,
 `3` lease conflict, `4` invalid graph. Every query command takes
@@ -161,20 +169,25 @@ cairn root is the git repository root.)
 Cairn is designed for many concurrent workers of mixed species. The
 loop each worker runs:
 
-1. `cairn next --lock` — get the highest-impact unclaimed frontier hole
-   plus its context packet, and lease it (`CAIRN_AGENT` names you).
-2. Work on it. Add or edit files in `research/` directly — new routes
+1. `cairn status` (or read `research/FRONTIER.md`) — goals, open holes,
+   what's already claimed.
+2. Pick an unclaimed hole; `cairn lock <id> --ttl 45m` and
+   `cairn context <id>` for the bounded working packet.
+3. Work on it. Add or edit files in `research/` directly — new routes
    decomposing the claim, a direct-proof route, an obstruction claim.
-3. `cairn preview` — see the derived consequences of your edit before
+4. `cairn preview` — see the derived consequences of your edit before
    committing. A new `requires: []` route is flagged loudly: you are
    asserting a complete proof.
-4. `cairn check --changed` — duplicates involving your changed files are
+5. `cairn check --changed` — duplicates involving your changed files are
    hard errors; everything else compiles.
-5. Commit the Markdown. Locks expire on their own; mathematical history
+6. Commit the Markdown. Locks expire on their own; mathematical history
    never contains scheduler state.
 
-Locks are cooperative TTL leases in `.cairn/locks/`, not enforcement.
-Telemetry (`.cairn/telemetry.jsonl`, one JSONL record per invocation) is
+Claims are advisory TTL flags in `.cairn/locks/`, not enforcement, and
+they carry no identity: everyone is one team, a claim means "someone is
+on this," each worker knows which work is its own, and the TTL cleans up
+after crashes. Telemetry (`.cairn/telemetry.jsonl`, one JSONL record per
+invocation — command, argv, exit, duration, no attribution) is
 observability only and can never affect research state.
 
 ## The site
@@ -183,7 +196,10 @@ observability only and can never affect research state.
 force-directed graph of the whole program (goals ringed, established
 filled, failed routes dashed red and toggleable), a panel with frontier
 and library, per-node pages with statements, derivations, and dead
-space. Publish it with GitHub Pages:
+space. **Live demo: <https://sauersml.github.io/Cairn/>** — a small
+worked example, rebuilt by CI from scratch on every push.
+
+`cairn site --serve` previews it locally. Publish it with GitHub Pages:
 
 ```yaml
 name: Cairn site
@@ -290,7 +306,9 @@ smoke test.)
   graph, the context packets, and the site — so nobody re-walks dead
   ends.
 - **Noncanonical text cannot leak into the proof state.**
-- **Scheduler state (locks, telemetry) is never committed.**
+- **Workers are one team.** No agent identities, no ownership, no
+  adversarial machinery — claims are shared signal flags with TTLs.
+- **Scheduler state (claims, telemetry) is never committed.**
 - **No third-party dependencies**, one file, boring formats (Markdown +
   restricted YAML frontmatter, JSON out).
 
