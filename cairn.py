@@ -1183,8 +1183,24 @@ font-size:.72rem;letter-spacing:.14em;text-transform:uppercase}
 nav.top a{border:0;color:var(--mut2)}nav.top a:hover{color:var(--accent)}
 .art{font:12.5px MONO;word-break:break-all}
 .katex{font-size:1.03em}
-.katex-display{overflow-x:auto;overflow-y:hidden;padding:.25em 0;margin:.6em 0}
-.mathblock{overflow-x:auto;margin:1.2em 0}
+.katex-display{overflow-x:auto;overflow-y:hidden;padding:.25em 0;margin:.5em 0;
+text-align:left}
+.katex-display>.katex{text-align:left}
+.mathblock{overflow-x:auto;margin:1.2em 0;padding:.7em 1.1em;
+background:var(--panel);border:1px solid var(--line)}
+.texd{display:block}
+.texfail{font:12.5px MONO;background:var(--panel);border:1px solid var(--line);
+padding:.05em .3em}
+a.fileref{color:var(--ink);border-bottom:1px solid var(--rule);
+text-decoration:none;word-break:break-word}
+a.fileref:hover{color:var(--accent);border-bottom-color:var(--accent)}
+code a{color:inherit;border-bottom:1px solid var(--rule)}
+code a:hover{color:var(--accent)}
+pre.src{font:12px/1.55 MONO;background:var(--panel);border:1px solid var(--line);
+padding:1em 0;overflow-x:auto;counter-reset:none}
+pre.src .ln{display:inline-block;width:4.2em;padding-right:1.1em;text-align:right;
+color:var(--mut2);user-select:none}
+pre.src .ln:target{color:var(--accent);font-weight:700}
 """.replace("SANS", SANS).replace("MONO", MONO).replace("PALETTE", PALETTE)
 # Typeset on demand: `cairnTypeset(el)` is safe to call before KaTeX has
 # loaded (it re-runs on the script's load event) and never throws on a bad
@@ -1195,10 +1211,27 @@ window.KATEX_DELIMS=[{left:"$$",right:"$$",display:true},
  {left:"\\\\(",right:"\\\\)",display:false},
  {left:"$",right:"$",display:false}];
 window.cairnTypeset=function(el){
- if(!el||typeof renderMathInElement!=='function')return;
- try{renderMathInElement(el,{delimiters:window.KATEX_DELIMS,throwOnError:false,
-  ignoredTags:["script","noscript","style","textarea","pre","code","option"],
-  errorColor:"#a33a1c"});}catch(e){}
+ if(!el)return;
+ // Pre-translated shorthand: each span carries TeX, and its original text in
+ // data-src so a refusal degrades to exactly what the author typed.
+ if(typeof katex!=='undefined'){
+  var ns=el.querySelectorAll('.tex,.texd');
+  for(var i=0;i<ns.length;i++){
+   var n=ns[i];
+   if(n.getAttribute('data-done'))continue;
+   n.setAttribute('data-done','1');
+   try{katex.render(n.textContent,n,{displayMode:n.classList.contains('texd'),
+    throwOnError:true,strict:false,trust:false});}
+   catch(e){n.textContent=n.getAttribute('data-src')||n.textContent;
+    n.className='texfail';}
+  }
+ }
+ // Anyone who does write real TeX delimiters still gets them rendered.
+ if(typeof renderMathInElement==='function'){
+  try{renderMathInElement(el,{delimiters:window.KATEX_DELIMS,throwOnError:false,
+   ignoredTags:["script","noscript","style","textarea","pre","code","option"],
+   errorColor:"#a33a1c"});}catch(e){}
+ }
 };
 window.addEventListener('DOMContentLoaded',function(){
  var go=function(){cairnTypeset(document.body)};
@@ -1332,17 +1365,420 @@ KATEX = (
     '<script>' + KATEX_OPTS_JS + '</script>')
 
 
-def md_to_html(md):
+# ---------------------------------------------------------------------------
+# Math as people actually write it
+#
+# Notes are written with the mathematics inside ordinary backticks and plain
+# fenced blocks, in a mixed ASCII/Unicode shorthand -- `L_1 = t L t^{-1}`,
+# `A^(X) semidirect H`, `‖pi(s) - I‖₂ <= eps`.  Almost nobody writes LaTeX and
+# nobody should have to, so the site translates that shorthand into TeX and
+# renders it, rather than asking authors to adopt a delimiter.
+#
+# The translation is deliberately closed: it emits only commands from the
+# tables below and builds its own groups, so the output cannot fail to parse.
+# Anything it does not recognise makes it decline (return None) and the span
+# stays exactly as written, as code.  Declining is always safe; guessing is
+# not, which is why the classifier below is a wall of exclusions -- ids, paths,
+# identifiers and command lines vastly outnumber the formulas in some notes and
+# must never be italicised into nonsense.
+# ---------------------------------------------------------------------------
+TEX_UNICODE = {
+    "‖": r"\Vert", "|": r"\vert", "⟨": r"\langle", "⟩": r"\rangle",
+    "≤": r"\le", "≥": r"\ge", "≠": r"\ne", "≅": r"\cong", "≃": r"\simeq",
+    "≈": r"\approx", "≡": r"\equiv", "≔": r":=", "∼": r"\sim",
+    "⊗": r"\otimes", "⊕": r"\oplus", "⊞": r"\boxplus", "⋊": r"\rtimes",
+    "⋉": r"\ltimes", "≀": r"\wr", "∗": r"*", "×": r"\times", "·": r"\cdot",
+    "∘": r"\circ", "±": r"\pm", "∓": r"\mp",
+    "⊆": r"\subseteq", "⊂": r"\subset", "⊇": r"\supseteq", "⊃": r"\supset",
+    "∈": r"\in", "∉": r"\notin", "∅": r"\emptyset",
+    "∩": r"\cap", "∪": r"\cup", "∧": r"\wedge", "∨": r"\vee", "¬": r"\neg",
+    "∀": r"\forall", "∃": r"\exists", "∑": r"\sum", "∏": r"\prod",
+    "∫": r"\int", "√": r"\surd", "∞": r"\infty", "∂": r"\partial",
+    "→": r"\to", "←": r"\leftarrow", "↦": r"\mapsto", "⟶": r"\longrightarrow",
+    "⟹": r"\implies", "⟸": r"\impliedby", "⇒": r"\Rightarrow",
+    "⇔": r"\iff", "↔": r"\leftrightarrow", "↷": r"\curvearrowright",
+    "↪": r"\hookrightarrow", "↠": r"\twoheadrightarrow", "⇉": r"\rightrightarrows",
+    "≪": r"\ll", "≫": r"\gg", "≺": r"\prec", "≻": r"\succ",
+    "⊴": r"\trianglelefteq", "◁": r"\triangleleft", "⊥": r"\perp", "⊤": r"\top",
+    "ℓ": r"\ell", "ℂ": r"\mathbb{C}", "ℝ": r"\mathbb{R}", "ℤ": r"\mathbb{Z}",
+    "ℕ": r"\mathbb{N}", "ℚ": r"\mathbb{Q}", "𝔽": r"\mathbb{F}",
+    "†": r"\dagger", "′": r"'", "″": r"''", "…": r"\ldots", "⋯": r"\cdots",
+    "−": "-", "–": "-", "—": "-", "⁄": "/", "≟": r"\overset{?}{=}",
+    "α": r"\alpha", "β": r"\beta", "γ": r"\gamma", "δ": r"\delta",
+    "ε": r"\varepsilon", "ϵ": r"\epsilon", "ζ": r"\zeta", "η": r"\eta",
+    "θ": r"\theta", "ι": r"\iota", "κ": r"\kappa", "λ": r"\lambda",
+    "μ": r"\mu", "ν": r"\nu", "ξ": r"\xi", "π": r"\pi", "ρ": r"\rho",
+    "σ": r"\sigma", "τ": r"\tau", "υ": r"\upsilon", "φ": r"\varphi",
+    "ϕ": r"\phi", "χ": r"\chi", "ψ": r"\psi", "ω": r"\omega",
+    "Γ": r"\Gamma", "Δ": r"\Delta", "Θ": r"\Theta", "Λ": r"\Lambda",
+    "Ξ": r"\Xi", "Π": r"\Pi", "Σ": r"\Sigma", "Φ": r"\Phi", "Ψ": r"\Psi",
+    "Ω": r"\Omega", "ℵ": r"\aleph",
+}
+SUB_DIGITS = {"₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4", "₅": "5",
+              "₆": "6", "₇": "7", "₈": "8", "₉": "9", "₊": "+", "₋": "-",
+              "ₙ": "n", "ᵢ": "i", "ⱼ": "j", "ₖ": "k", "ₘ": "m", "ₚ": "p"}
+SUP_DIGITS = {"⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5",
+              "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9", "⁺": "+", "⁻": "-",
+              "ⁿ": "n", "ᵀ": "T", "ᵃ": "a"}
+GREEK_WORDS = {w: "\\" + w for w in (
+    "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi "
+    "rho sigma tau upsilon phi chi psi omega Gamma Delta Theta Lambda Xi Pi "
+    "Sigma Phi Psi Omega".split())}
+GREEK_WORDS["pi"] = r"\pi"
+GREEK_WORDS["varepsilon"] = r"\varepsilon"
+GREEK_WORDS["eps"] = r"\varepsilon"
+OP_WORDS = {
+    "tensor": r"\otimes", "otimes": r"\otimes", "oplus": r"\oplus",
+    "semidirect": r"\rtimes", "rtimes": r"\rtimes", "ltimes": r"\ltimes",
+    "directSum": r"\bigoplus", "bigoplus": r"\bigoplus", "wr": r"\wr",
+    "in": r"\in", "notin": r"\notin", "subset": r"\subset",
+    "subseteq": r"\subseteq", "supset": r"\supset", "cap": r"\cap",
+    "cup": r"\cup", "circ": r"\circ", "times": r"\times", "cdot": r"\cdot",
+    "iff": r"\iff", "implies": r"\implies", "forall": r"\forall",
+    "exists": r"\exists", "infty": r"\infty", "emptyset": r"\emptyset",
+    "to": r"\to", "mapsto": r"\mapsto", "cong": r"\cong", "sim": r"\sim",
+    "leq": r"\le", "geq": r"\ge", "neq": r"\ne", "pm": r"\pm", "mp": r"\mp",
+    "sqrt": r"\sqrt", "sum": r"\sum", "prod": r"\prod", "int": r"\int",
+    "ker": r"\ker", "dim": r"\dim", "deg": r"\deg", "det": r"\det",
+    "exp": r"\exp", "log": r"\log", "inf": r"\inf", "sup": r"\sup",
+    "lim": r"\lim", "max": r"\max", "min": r"\min", "gcd": r"\gcd",
+    "mod": r"\bmod", "tr": r"\operatorname{tr}", "Tr": r"\operatorname{Tr}",
+    "im": r"\operatorname{im}", "coker": r"\operatorname{coker}",
+    "rank": r"\operatorname{rank}", "span": r"\operatorname{span}",
+    "supp": r"\operatorname{supp}", "id": r"\operatorname{id}",
+    "Aut": r"\operatorname{Aut}", "End": r"\operatorname{End}",
+    "Hom": r"\operatorname{Hom}", "Ind": r"\operatorname{Ind}",
+    "Res": r"\operatorname{Res}", "Ad": r"\operatorname{Ad}",
+}
+ASCII_OPS = sorted(
+    [("<->", r"\leftrightarrow"), ("|->", r"\mapsto"),
+     ("|-->", r"\longmapsto"), ("==>", r"\implies"), ("<=>", r"\iff"),
+     ("<==", r"\impliedby"), ("-->", r"\longrightarrow"),
+     ("<=", r"\le"), (">=", r"\ge"), ("!=", r"\ne"), ("~=", r"\cong"), ("=~", r"\cong"),
+     ("->", r"\to"), ("=>", r"\Rightarrow"), ("<<", r"\ll"),
+     (">>", r"\gg"), ("::", r"::"), (":=", r":="), ("||", r"\Vert")],
+    key=lambda kv: -len(kv[0]))
+STOPWORDS = set(
+    "a an and are as at be been but by can does do each every for from has "
+    "have if in into is it its no not of on or over so some that the then "
+    "there these this to under up was were where which while with without "
+    "iff only if_and_only_if all any".split()) - {"in", "iff", "to"}
+_MATH_UNI = set(TEX_UNICODE) | set(SUB_DIGITS) | set(SUP_DIGITS)
+_SLUGRE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+){2,}$")
+_PATHRE = re.compile(r"[\w./-]+\.(?:md|py|lean|tex|json|ya?ml|sh|toml|txt|cff|g)\b")
+_LEANRE = re.compile(r"^[A-Za-z][\w']*(?:\.[A-Za-z][\w']*)+$")
+
+
+def _tex_atoms(src):
+    """Translate the shorthand into (kind, tex) atoms, or None to decline."""
+    atoms, i, n = [], 0, len(src)
+    while i < n:
+        ch = src[i]
+        if ch.isspace():
+            atoms.append(("sp", " "))
+            i += 1
+            continue
+        if ch in "\\@`\u00a0":
+            return None
+        for a, t in ASCII_OPS:
+            if src.startswith(a, i):
+                atoms.append(("rel", t))
+                i += len(a)
+                break
+        else:
+            if ch in ("_", "^"):
+                j = i + 1
+                if j < n and src[j] in "({":
+                    close = ")" if src[j] == "(" else "}"
+                    depth, k = 1, j + 1
+                    while k < n and depth:
+                        if src[k] == src[j]:
+                            depth += 1
+                        elif src[k] == close:
+                            depth -= 1
+                        k += 1
+                    if depth:
+                        return None
+                    inner = _tex_atoms(src[j + 1:k - 1])
+                    if inner is None:
+                        return None
+                    atoms.append(("script", ch + "{" + _join_atoms(inner) + "}"))
+                    i = k
+                    continue
+                m = re.match(r"[-+]?[A-Za-z0-9]+|[*']", src[j:])
+                if not m:
+                    return None
+                tok = m.group(0)
+                if re.fullmatch(r"[A-Za-z]{2,}", tok):
+                    tok = (GREEK_WORDS.get(tok) or r"\mathrm{" + tok + "}")
+                atoms.append(("script", ch + "{" + tok + "}"))
+                i = j + m.end()
+                continue
+            if ch in SUB_DIGITS:
+                run = ""
+                while i < n and src[i] in SUB_DIGITS:
+                    run += SUB_DIGITS[src[i]]
+                    i += 1
+                atoms.append(("script", "_{" + run + "}"))
+                continue
+            if ch in SUP_DIGITS:
+                run = ""
+                while i < n and src[i] in SUP_DIGITS:
+                    run += SUP_DIGITS[src[i]]
+                    i += 1
+                atoms.append(("script", "^{" + run + "}"))
+                continue
+            if ch in TEX_UNICODE:
+                atoms.append(("op", TEX_UNICODE[ch]))
+                i += 1
+                continue
+            if ch == "\u0304":  # combining macron: bar the previous atom
+                for k in range(len(atoms) - 1, -1, -1):
+                    if atoms[k][0] in ("var", "word"):
+                        atoms[k] = (atoms[k][0], r"\bar{" + atoms[k][1] + "}")
+                        break
+                i += 1
+                continue
+            if ch.isalpha():
+                # a hyphenated lowercase phrase is English, not a product
+                hy = re.match(r"[a-z]+(?:-[a-z]+)+", src[i:])
+                if hy and not any(p in GREEK_WORDS or p in OP_WORDS
+                                  for p in hy.group(0).split("-")):
+                    atoms.append(("word", r"\text{" + hy.group(0) + "}"))
+                    i += hy.end()
+                    continue
+                m = re.match(r"[A-Za-z]+", src[i:])
+                if not m:
+                    return None  # a letter with no translation: stay verbatim
+                w = m.group(0)
+                i += m.end()
+                if w in GREEK_WORDS:
+                    atoms.append(("var", GREEK_WORDS[w]))
+                elif w in OP_WORDS:
+                    atoms.append(("op", OP_WORDS[w]))
+                elif len(w) == 1:
+                    atoms.append(("var", w))
+                elif w.lower() in STOPWORDS:
+                    atoms.append(("word", r"\text{" + w + "}"))
+                else:
+                    atoms.append(("var", r"\mathrm{" + w + "}"))
+                continue
+            if ch.isdigit():
+                m = re.match(r"[0-9]+(?:\.[0-9]+)?", src[i:])
+                atoms.append(("num", m.group(0)))
+                i += m.end()
+                continue
+            if ch in "+-*/=<>()[]|,.:;!?'":
+                atoms.append(("rel" if ch in "=<>" else "punct", ch))
+                i += 1
+                continue
+            if ch in "{}":
+                atoms.append(("punct", "\\" + ch))
+                i += 1
+                continue
+            if ch in "%#&$":
+                atoms.append(("punct", "\\" + ch))
+                i += 1
+                continue
+            if ch == "~":
+                atoms.append(("op", r"\sim"))
+                i += 1
+                continue
+            return None
+    return atoms
+
+
+def _join_atoms(atoms):
+    out = []
+    for k, (kind, tex) in enumerate(atoms):
+        if kind == "sp":
+            prev = nxt = None
+            for j in range(k - 1, -1, -1):
+                if atoms[j][0] != "sp":
+                    prev = atoms[j][0]
+                    break
+            for j in range(k + 1, len(atoms)):
+                if atoms[j][0] != "sp":
+                    nxt = atoms[j][0]
+                    break
+            if prev in ("word", "var", "num") and nxt in ("word", "var", "num"):
+                out.append(r"\ ")
+            continue
+        out.append(tex)
+    # `\to R` not `\toR`: a command that runs into a letter is a different,
+    # undefined command.  Done at token boundaries, where the split is known --
+    # a regex over the joined string backtracks into `\thet`+`a`.
+    joined = []
+    for k, piece in enumerate(out):
+        joined.append(piece)
+        nxt = out[k + 1] if k + 1 < len(out) else ""
+        if re.search(r"\\[A-Za-z]+$", piece) and nxt[:1].isalpha():
+            joined.append(" ")
+    return "".join(joined)
+
+
+def house_to_tex(src):
+    """TeX for a shorthand formula, or None if it should stay verbatim."""
+    if not src.strip() or len(src) > 400:
+        return None
+    atoms = _tex_atoms(src)
+    if atoms is None:
+        return None
+    tex = _join_atoms(atoms).strip()
+    return tex or None
+
+
+def is_math_source(s, ids=()):
+    """Should this verbatim span be typeset as mathematics?"""
+    t = s.strip()
+    if not t or t in ids or len(t) > 400:
+        return False
+    if _PATHRE.search(t) or _LEANRE.match(t) or _SLUGRE.match(t):
+        return False
+    if re.match(r"^(?:bin/|\./|python3?\s|git\s|lake\s|grep\s|cairn\s|msi\s|"
+                r"sed\s|awk\s|rsync\s|gh\s)", t):
+        return False
+    if re.match(r"^[A-Z][A-Z0-9_]{3,}$", t) or re.search(r"arXiv|doi:", t):
+        return False
+    if re.match(r"^[a-z_]+:\s*($|\[|\{)", t) or t.endswith(":"):
+        return False
+    if re.search(r"(?:[A-Za-z0-9_]{3,}|/)\*", t):
+        return False
+    if re.search(r"[A-Za-z0-9_]{3,}/[A-Za-z0-9_]{3,}", t) \
+            and not any(c in _MATH_UNI for c in t):
+        return False
+    if any(w in ids for w in re.findall(r"[a-z0-9][a-z0-9-]{3,}", t)):
+        return False
+    signal = (any(c in _MATH_UNI for c in t)
+              or re.search(r"[_^][({A-Za-z0-9]", t)
+              or re.search(r"\b(" + "|".join(GREEK_WORDS) + r")\b", t)
+              or re.search(r"\b(" + "|".join(re.escape(w) for w in OP_WORDS) + r")\b", t)
+              or re.search(r"(<=|>=|!=|->|=>|\|->|~=|<=>)", t)
+              or re.search(r"[=<>]", t)
+              or re.fullmatch(r"[A-Za-z][A-Za-z0-9_^{}()'-]{0,3}", t)
+              or re.fullmatch(r"[0-9]+(?:[/^][0-9]+)+", t))
+    return bool(signal)
+
+
+def tex_span(src, ids=(), display=False):
+    """Rendered element for a formula, or None to keep it verbatim."""
+    if not is_math_source(src, ids):
+        return None
+    tex = house_to_tex(src)
+    if not tex:
+        return None
+    cls = "texd" if display else "tex"
+    return (f'<span class="{cls}" data-src="{html.escape(src, quote=True)}">'
+            f"{html.escape(tex)}</span>")
+
+
+def math_block(body, ids=()):
+    """Display math for a fenced block, or None to keep it preformatted."""
+    lines = [ln for ln in body.split("\n")]
+    live = [ln for ln in lines if ln.strip()]
+    if not live or len(live) > 24:
+        return None
+    for ln in live:
+        # drawings, listings, tables and prose are not formulas
+        if re.search(r"[│├└┌┬┴┼─┐╭╰•]|\[(?:OPEN|✓|✗)\]|^\s*[-*+]\s|\]\(|^#|"
+                     r"^\s{0,3}\w[\w .]{0,40}:\s*$", ln):
+            return None
+        if len(ln) > 200:
+            return None
+        if not is_math_source(ln, ids):
+            return None
+    out = []
+    for ln in live:
+        tex = house_to_tex(ln)
+        if not tex:
+            return None
+        out.append(f'<span class="texd" data-src="{html.escape(ln, quote=True)}">'
+                   f"{html.escape(tex)}</span>")
+    return '<div class="mathblock">' + "".join(out) + "</div>"
+
+
+REFERENCED_FILES = set()
+_FILE_MENTION = re.compile(
+    r"(?<![\w/.-])((?:[\w.-]+/)*[\w.-]+\.(?:md|lean|py|tex|json|ya?ml|toml|sh|txt|cff|g))"
+    r"((?::\d+(?:[-–]\d+)?)?)")
+_URL = re.compile(r"(?<![\w\"'=])(https?://[^\s<>\"')\]]+)")
+
+
+def file_page_name(path):
+    return "f_" + re.sub(r"[^A-Za-z0-9._-]", "-", path.strip("/")) + ".html"
+
+
+def _repo_has(path):
+    try:
+        full = os.path.join(REPO, path)
+        return os.path.isfile(full) and os.path.getsize(full) <= 4_000_000
+    except OSError:
+        return False
+
+
+def linkify_prose(html_str):
+    """Make URLs and file mentions clickable in already-escaped HTML.
+
+    File mentions resolve to this site's own rendered page for the file, not
+    to a forge: a reader following a reference should land somewhere the
+    mathematics is typeset, and should not need an account to read it."""
+    parts = re.split(r"(<[^>]+>)", html_str)
+    out, in_a = [], 0
+    for part in parts:
+        if part.startswith("<"):
+            if part.startswith("<a"):
+                in_a += 1
+            elif part.startswith("</a"):
+                in_a = max(0, in_a - 1)
+            out.append(part)
+            continue
+        if in_a:
+            out.append(part)
+            continue
+        part = _URL.sub(
+            lambda m: f'<a href="{m.group(1)}" target="_blank" rel="noopener">'
+                      f"{m.group(1)}</a>", part)
+
+        def fileref(m):
+            path, pin = m.group(1), m.group(2)
+            if not _repo_has(path):
+                return m.group(0)
+            REFERENCED_FILES.add(path)
+            frag = ""
+            if pin:
+                frag = "#L" + re.split(r"[-–]", pin[1:])[0]
+            return (f'<a class="fileref" href="{file_page_name(path)}{frag}">'
+                    f"{path}{pin}</a>")
+
+        out.append(_FILE_MENTION.sub(fileref, part))
+    return "".join(out)
+
+
+def md_to_html(md, ids=()):
     out, in_code, in_list, para = [], False, False, []
     fence = [False]  # is the open fence a math fence?
+    fence_buf = []
 
     def inline(s):
+        # Verbatim spans come out before escaping: a formula must keep its
+        # own `<`, `&` and braces to be translatable at all.
+        held = []
+
+        def hold(m):
+            raw = m.group(1)
+            el = tex_span(raw, ids)
+            held.append(el or "<code>"
+                        + linkify_prose(html.escape(raw, quote=False))
+                        + "</code>")
+            return "\x00%d\x00" % (len(held) - 1)
+
+        s = re.sub(r"`([^`]+)`", hold, s)
         s = html.escape(s, quote=False)
-        s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
         s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
         s = re.sub(r"(?<![\w*])\*([^*]+)\*(?![\w*])", r"<em>\1</em>", s)
         s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', s)
-        return s
+        s = linkify_prose(s)
+        return re.sub(r"\x00(\d+)\x00", lambda m: held[int(m.group(1))], s)
 
     def flush_para():
         if para:
@@ -1360,16 +1796,24 @@ def md_to_html(md):
             flush_para()
             flush_list()
             if not in_code:
-                # ```math fences become display TeX; every other fence is code
+                in_code = True
                 fence[0] = line.strip()[3:].strip().lower() in ("math", "latex", "tex")
-                out.append('<div class="mathblock">$$' if fence[0] else "<pre>")
+                fence_buf.clear()
             else:
-                out.append("$$</div>" if fence[0] else "</pre>")
+                in_code = False
+                body = "\n".join(fence_buf)
+                blk = math_block(body, ids)
+                if blk is None and fence[0]:
+                    # an explicit math fence is trusted even when the
+                    # shorthand translator declines it
+                    blk = ('<div class="mathblock"><span class="texd">'
+                           + html.escape(body.strip()) + "</span></div>")
+                out.append(blk or "<pre>" + html.escape(body) + "</pre>")
+                fence_buf.clear()
                 fence[0] = False
-            in_code = not in_code
             continue
         if in_code:
-            out.append(html.escape(line))
+            fence_buf.append(line)
             continue
         m = re.match(r"^(#{1,4})\s+(.*)$", line)
         if m:
@@ -1393,7 +1837,7 @@ def md_to_html(md):
     flush_para()
     flush_list()
     if in_code:
-        out.append("$$</div>" if fence[0] else "</pre>")
+        out.append("<pre>" + html.escape("\n".join(fence_buf)) + "</pre>")
     return "\n".join(out)
 
 
@@ -1478,8 +1922,13 @@ border:1px solid var(--line);padding:.7em;overflow-x:auto}
 .stmt a{color:var(--ink);border-bottom:1px solid var(--rule);text-decoration:none}
 .stmt a:hover{color:var(--accent);border-bottom-color:var(--accent)}
 .stmt p{margin:.55em 0}
-.stmt .mathblock{overflow-x:auto;margin:.9em 0}
+.stmt .mathblock{overflow-x:auto;margin:.9em 0;padding:.5em .7em;
+background:var(--paper);border:1px solid var(--line)}
 .stmt .katex{font-size:1em}
+.stmt .texd{display:block}
+.stmt .texfail{font:11px __MONO__;background:var(--paper);
+border:1px solid var(--line);padding:.03em .28em}
+.stmt a.fileref{color:var(--ink);border-bottom:1px solid var(--rule)}
 h3.sec{font-size:10px;font-weight:700;letter-spacing:.16em;color:var(--mut2);
 text-transform:uppercase;margin:1.9em 0 .4em}
 .fr{list-style:none;padding:0;margin:.3em 0}
@@ -1493,15 +1942,19 @@ text-transform:uppercase;margin:1.9em 0 .4em;color:var(--mut2)}
 svg text{font:10px __MONO__;fill:var(--mut);pointer-events:none;
 paint-order:stroke;stroke:var(--paper);stroke-width:3.5px;stroke-linejoin:round}
 svg text.goalcap{fill:var(--goal);stroke-width:4px}
-.lk{stroke:var(--edge);stroke-width:1.3;fill:none}
+.lk{stroke:var(--edge);stroke-width:1.5}
 .lk.kill,.lk.dead{stroke:var(--dead);stroke-dasharray:5 3;stroke-width:1.2;
 opacity:.75}
-g.deadbit,path.dead{visibility:hidden}
-.showdead g.deadbit,.showdead path.dead{visibility:visible}
+g.deadbit,line.dead{visibility:hidden}
+.showdead g.deadbit,.showdead line.dead{visibility:visible}
 g.orphan{display:none}
-.dim{opacity:.1}
-g.n,path.lk{transition:opacity .12s}
+.dim{opacity:.13}
+g.n,line.lk{transition:opacity .1s ease}
 text.hidelabel{display:none}
+g.n.hot text{display:block}
+g.n.hot circle{stroke-width:3}
+line.lk.hot{stroke:var(--ink);stroke-width:1.9}
+line.lk.kill.hot,line.lk.dead.hot{stroke:var(--dead);stroke-width:1.7}
 a.open-page{color:var(--ink);font-size:12.5px;letter-spacing:.02em;
 border-bottom:1px solid var(--rule);text-decoration:none}
 a.open-page:hover{color:var(--accent);border-bottom-color:var(--accent)}
@@ -1544,7 +1997,6 @@ color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
 <header><span class="wordmark">CAIRN</span><span class="stats">__STATS__</span>
 <button id="openSearch">search the graph<kbd>/</kbd></button>
 <label><input type="checkbox" id="showdead" checked> failed routes</label>
-<label><input type="checkbox" id="showlabels" checked> labels</label>
 <button class="lnk" id="frontierbtn">frontier</button>
 <a href="nodes.html">all nodes</a></header>
 <main><svg id="view"></svg>
@@ -1553,8 +2005,8 @@ color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="6" fill="#178a5e"/></svg>established</span>
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="6" fill="#fff" stroke="#c08a00" stroke-width="2.2"/></svg>open</span>
 <span><svg width="22" height="16"><rect x="4" y="3" width="10" height="10" fill="#8b8f86"/></svg>&and; multi-premise route</span>
-<span><svg width="27" height="16"><path d="M1,11 Q13,3 20,7" fill="none" stroke="#17171459" stroke-width="1.3"/><path d="M19,4.5L25,8L19,11.5z" fill="#17171459"/></svg>premises &#10230; target</span>
-<span><svg width="27" height="16"><path d="M1,11 Q13,3 20,7" fill="none" stroke="#c43c2e" stroke-width="1.2" stroke-dasharray="5,3"/><path d="M19,4.5L25,8L19,11.5z" fill="#c43c2e"/></svg>failed / invalidated</span>
+<span><svg width="27" height="16"><line x1="1" y1="8" x2="20" y2="8" stroke="#17171459" stroke-width="1.5"/><path d="M19,4.5L25,8L19,11.5z" fill="#17171459"/></svg>premises &#10230; target</span>
+<span><svg width="27" height="16"><line x1="1" y1="8" x2="20" y2="8" stroke="#c43c2e" stroke-width="1.3" stroke-dasharray="5,3"/><path d="M19,4.5L25,8L19,11.5z" fill="#c43c2e"/></svg>failed / invalidated</span>
 </div>
 <div id="scrim"></div>
 <div id="pal" role="dialog" aria-label="Search the graph">
@@ -1639,26 +2091,16 @@ const g=svg.append('g');
 const zoom=d3.zoom().scaleExtent([.2,3.5])
  .on('zoom',e=>{g.attr('transform',e.transform)});
 svg.call(zoom).on('dblclick.zoom',null);
-// More room between premises and target than the old layout: the labels are
-// the thing that collides, not the discs, so the spacing is set by text.
 const linkForce=d3.forceLink(links).id(d=>d.id)
- .distance(l=>l.kind==='aff'?180:(l.kind==='in'?76:150))
- .strength(l=>l.kind==='aff'?.03+.1*l.w:.5);
+ .distance(l=>l.kind==='aff'?150:(l.kind==='in'?60:115))
+ .strength(l=>l.kind==='aff'?.03+.1*l.w:.55);
 const sim=d3.forceSimulation(nodes)
  .force('link',linkForce)
- .force('charge',d3.forceManyBody().strength(-560))
- .force('x',d3.forceX(W/2).strength(.035))
+ .force('charge',d3.forceManyBody().strength(-430))
+ .force('x',d3.forceX(W/2).strength(.04))
  .force('y',d3.forceY(bandY).strength(.5))
- .force('collide',d3.forceCollide(d=>d.type==='claim'?(d.goal?62:50):16));
-// Curved edges: two arrows between the same band no longer lie on top of
-// each other, and a bundle reads as separate strands instead of one smear.
-const arc=l=>{
- const x1=l.source.x,y1=l.source.y,x2=l.target.x,y2=l.target.y;
- const dx=x2-x1,dy=y2-y1,h=Math.hypot(dx,dy)||1;
- const b=Math.min(h*0.13,26);
- return `M${x1},${y1} Q${(x1+x2)/2-dy/h*b},${(y1+y2)/2+dx/h*b} ${x2},${y2}`;
-};
-const line=g.selectAll('path.lk').data(links.filter(real)).join('path')
+ .force('collide',d3.forceCollide(d=>d.type==='claim'?(d.goal?48:38):13));
+const line=g.selectAll('line').data(links.filter(real)).join('line')
  .attr('class',l=>'lk'+(l.kind==='kill'?' kill':'')+(l.dead?' dead':''))
  .attr('marker-end',l=>l.kind==='in'?null:(l.dead||l.kind==='kill'?'url(#mr)':'url(#m)'))
  .style('cursor',l=>l.route?'pointer':null)
@@ -1711,10 +2153,8 @@ node.filter(d=>d.type==='claim').each(function(d){
   h:l2?25:14,top:d.goal?28:19});
 });
 LBL.sort((a,b)=>prio(b.d)-prio(a.d));
-let SHOWLBL=true,pinned=null;
 function relabel(){
  const sd=document.getElementById('showdead').checked;
- if(!SHOWLBL){for(const o of LBL)o.el.classList.add('hidelabel');return}
  const kept=[];
  for(const o of LBL){
   const d=o.d;
@@ -1723,23 +2163,38 @@ function relabel(){
   let hit=false;
   for(let i=0;i<kept.length;i++){const k=kept[i];
    if(b[0]<k[2]&&k[0]<b[2]&&b[1]<k[3]&&k[1]<b[3]){hit=true;break}}
-  if(hit&&d!==pinned)o.el.classList.add('hidelabel');
+  if(hit)o.el.classList.add('hidelabel');
   else{o.el.classList.remove('hidelabel');kept.push(b)}
  }
 }
-document.getElementById('showlabels').onchange=function(){
- SHOWLBL=this.checked;relabel()};
 node.append('title').text(d=>d.type==='claim'?`${d.id} [${d.status}]`:(d.rtitle||d.route));
-function neighbors(d){
- const keep=new Set([d.id]);
- links.filter(real).forEach(l=>{if(l.source.id===d.id)keep.add(l.target.id);
-   if(l.target.id===d.id)keep.add(l.source.id)});
- node.classed('dim',n=>!keep.has(n.id));
- line.classed('dim',l=>l.source.id!==d.id&&l.target.id!==d.id);
+// Focus: hover previews, a click sticks, clicking the background clears.
+// A route is highlighted whole -- reaching a junction or a stub pulls in its
+// other endpoints, so a multi-premise route never lights up half-drawn.
+let selected=null;
+function nbrs(d){
+ const keep=new Set([d.id]),ends=l=>[l.source.id||l.source,l.target.id||l.target];
+ const rl=links.filter(real);
+ rl.forEach(l=>{const[a,b]=ends(l);
+  if(a===d.id)keep.add(b);if(b===d.id)keep.add(a)});
+ rl.forEach(l=>{const[a,b]=ends(l),A=byId[a],B=byId[b];
+  const hub=x=>x&&(x.type==='junction'||x.type==='stub');
+  if(hub(A)&&keep.has(a))keep.add(b);
+  if(hub(B)&&keep.has(b))keep.add(a)});
+ return keep;
 }
-node.on('mouseenter',(e,d)=>{neighbors(d);pinned=d;relabel()})
- .on('mouseleave',()=>{node.classed('dim',false);line.classed('dim',false);
-  pinned=null;relabel()});
+function highlight(d){
+ if(!d){g.classed('focus',false);
+  node.classed('dim',false).classed('hot',false);
+  line.classed('dim',false).classed('hot',false);return}
+ const keep=nbrs(d);
+ g.classed('focus',true);
+ node.classed('dim',n=>!keep.has(n.id)).classed('hot',n=>n.id===d.id);
+ line.classed('dim',l=>!(keep.has(l.source.id)&&keep.has(l.target.id)))
+     .classed('hot',l=>l.source.id===d.id||l.target.id===d.id);
+}
+node.on('mouseenter',(e,d)=>{if(!selected)highlight(d)})
+ .on('mouseleave',()=>{if(!selected)highlight(null)});
 // Every id in a panel is a link into the graph, and every artifact is a link
 // out to the file it names -- nothing in the panel is a dead end.
 const idlink=id=>byId[id]
@@ -1783,10 +2238,9 @@ function show(d){
   showRoute(d.route);
  }
 }
-selectById=id=>{const d=byId[id];if(d){show(d);if(!d.orphan){neighbors(d);
- setTimeout(()=>{node.classed('dim',false);line.classed('dim',false)},1600)}}};
-node.on('click',(e,d)=>{e.stopPropagation();show(d)});
-svg.on('click',closePanel);
+selectById=id=>{const d=byId[id];if(d){selected=d;highlight(d);show(d)}};
+node.on('click',(e,d)=>{e.stopPropagation();selected=d;highlight(d);show(d)});
+svg.on('click',()=>{selected=null;highlight(null);closePanel()});
 function refreshVis(){
  const sd=document.getElementById('showdead').checked;
  const deg={};
@@ -1805,7 +2259,8 @@ function refreshVis(){
 document.getElementById('showdead').onchange=refreshVis;
 let tk=0;
 sim.on('tick',()=>{
- line.attr('d',arc);
+ line.attr('x1',l=>l.source.x).attr('y1',l=>l.source.y)
+     .attr('x2',l=>l.target.x).attr('y2',l=>l.target.y);
  node.attr('transform',d=>`translate(${d.x},${d.y})`);
  if((++tk%7)===0)relabel();
 });
@@ -1896,25 +2351,78 @@ def _web_ref():
 
 
 def artifact_links(paths, root, ref):
-    """[(label, href|None)] for an `artifacts:` list."""
+    """[(label, href|None)] for an `artifacts:` list.
+
+    Prefer this site's own rendered page for the file, so a reader stays where
+    the mathematics is typeset; fall back to the forge only for files that are
+    not in the working tree (revision pins) or too large to publish."""
     out = []
     for p in paths:
         p = str(p)
-        if not root:
-            out.append((p, None))
-            continue
-        if ":" in p and not p.startswith(("http://", "https://")):
-            rev, _, path = p.partition(":")
-            out.append((p, f"{root}/blob/{rev}/{path}"))
-        elif p.startswith(("http://", "https://")):
+        if p.startswith(("http://", "https://")):
             out.append((p, p))
+        elif ":" in p and not os.path.exists(os.path.join(REPO, p)):
+            rev, _, path = p.partition(":")
+            out.append((p, f"{root}/blob/{rev}/{path}" if root else None))
+        elif _repo_has(p):
+            REFERENCED_FILES.add(p)
+            out.append((p, file_page_name(p)))
         else:
-            out.append((p, f"{root}/blob/{ref}/{p}"))
+            out.append((p, f"{root}/blob/{ref}/{p}" if root else None))
     return out
+
+
+FILE_PAGE_CAP = 5000
+
+
+def write_file_pages(ids, web, ref):
+    """Render every referenced repository file as a page on this site.
+
+    Markdown is rendered, so a note reached from a claim gets the same typeset
+    mathematics as the claim did; everything else is shown verbatim with a
+    line anchor per line, so a `file.ext:123` mention can land on the line."""
+    written, seen = 0, set()
+    while True:
+        todo = sorted(REFERENCED_FILES - seen)
+        if not todo:
+            break
+        for path in todo:
+            seen.add(path)
+            if written >= FILE_PAGE_CAP:
+                continue
+            full = os.path.join(REPO, path)
+            try:
+                with open(full, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            src = (f'<a href="{web}/blob/{ref}/{path}" target="_blank" '
+                   f'rel="noopener">view source on the forge</a>' if web else "")
+            head = (f"<h1><span class='node'>file</span>{html.escape(path)}</h1>"
+                    f"<p class='muted'>{src}</p>")
+            if path.lower().endswith(".md"):
+                body = text.split("---", 2)[-1] if text.startswith("---") else text
+                rendered = autolink(md_to_html(body, ids), ids)
+            else:
+                rows = []
+                for k, ln in enumerate(text.split("\n"), 1):
+                    rows.append(f'<span class="ln" id="L{k}">{k}</span>'
+                                + linkify_prose(html.escape(ln, quote=False)))
+                rendered = '<pre class="src">' + "\n".join(rows) + "</pre>"
+            with open(os.path.join(SITE_DIR, file_page_name(path)), "w",
+                      encoding="utf-8") as fh:
+                fh.write(page(path, head + rendered))
+            written += 1
+    dropped = len(REFERENCED_FILES) - written
+    if dropped > 0:
+        print(f"note: {dropped} referenced file(s) not published "
+              f"(cap {FILE_PAGE_CAP} or unreadable); those links fall back to the forge")
+    return written
 
 
 def generate_site(graph, locks):
     os.makedirs(SITE_DIR, exist_ok=True)
+    REFERENCED_FILES.clear()
     web, ref = _web_root(), _web_ref()
     # index = the graph, full viewport
     idset = set(graph.nodes)
@@ -1930,7 +2438,7 @@ def generate_site(graph, locks):
             "depth": depths.get(cid),
             "lock": fmt_remaining(locks[cid]) if cid in locks else None,
             "arts": artifact_links(c.get_list("artifacts"), web, ref),
-            "html": autolink(md_to_html(c.body), idset)})
+            "html": autolink(md_to_html(c.body, idset), idset)})
     for rid, r in graph.routes.items():
         tgt = r.meta.get("target")
         if tgt not in graph.claims:
@@ -1944,7 +2452,7 @@ def generate_site(graph, locks):
             "title": r.title, "target": tgt, "requires": reqs, "dead": dead,
             "killers": killers,
             "arts": artifact_links(r.get_list("artifacts"), web, ref),
-            "html": autolink(md_to_html(r.body), idset)}
+            "html": autolink(md_to_html(r.body, idset), idset)}
         if not reqs:
             if dead:
                 data["dead"].append({"route": rid, "target": tgt,
@@ -1998,8 +2506,12 @@ def generate_site(graph, locks):
         goalmark = (f'<span class="badge" style="background:{GOAL_COLOR}">GOAL</span> '
                     if n.meta.get("goal") else "")
         src = html.escape(n.relpath)
-        srclink = (f"<a href='{web}/blob/{ref}/{src}' target='_blank' "
-                   f"rel='noopener'>{src}</a>" if web else src)
+        if _repo_has(n.relpath):
+            REFERENCED_FILES.add(n.relpath)
+            srclink = f"<a class='fileref' href='{file_page_name(n.relpath)}'>{src}</a>"
+        else:
+            srclink = (f"<a href='{web}/blob/{ref}/{src}' target='_blank' "
+                       f"rel='noopener'>{src}</a>" if web else src)
         B = [f"<h1><span class='node'>{nid}</span> {html.escape(n.title)}</h1>",
              f"<p>{goalmark}{badge(n.status)} <span class='muted'>{n.kind} · "
              f"<span class='art'>{srclink}</span></span></p>"]
@@ -2040,10 +2552,11 @@ def generate_site(graph, locks):
                          if href else f"<li class='art'>{lab}</li>")
             B.append("</ul>")
         B.append("<h2>Statement</h2>")
-        B.append(autolink(md_to_html(n.body), set(graph.nodes))
+        B.append(autolink(md_to_html(n.body, idset), idset)
                  if n.body else "<p class='muted'>(no body)</p>")
         with open(os.path.join(SITE_DIR, f"{nid}.html"), "w", encoding="utf-8") as f:
             f.write(page(f"{nid}", "\n".join(B)))
+    write_file_pages(idset, web, ref)
     return SITE_DIR
 
 
