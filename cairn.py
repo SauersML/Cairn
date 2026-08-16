@@ -2138,9 +2138,9 @@ for(const n of nodes)n.layer=Math.round((n.depth==null?maxD+1:n.depth)*2);
 for(const c of DATA.claims)if(byId[c.id])byId[c.id].lib=(c.depth==null);
 for(const n of nodes)if(n.type!=='claim'){const t=byId[n.tgt];n.lib=!!(t&&t.lib)}
 const LGAP=105;
-// bandY is a first guess only; the layered pass below computes a real row for
-// every node, and rowY reads that once it exists.
-const bandY=d=>d.rowY!=null?d.rowY:80+d.layer*LGAP;
+// Vertical band per layer: this is the hierarchy, and it is a force pull, not
+// a pin -- the simulation is free to bend it where the structure demands.
+const bandY=d=>80+d.layer*LGAP;
 nodes.forEach(n=>{n.y=bandY(n);n.x=W/2+(Math.random()-.5)*W*.5});
 svg.append('defs').html('<marker id="m" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#17171459"/></marker><marker id="mr" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#c43c2e"/></marker>');
 const g=svg.append('g');
@@ -2225,8 +2225,8 @@ const linkForce=d3.forceLink(links).id(d=>d.id)
  .strength(l=>l.kind==='aff'?.03+.1*l.w:.55);
 const sim=d3.forceSimulation(nodes)
  .force('link',linkForce)
- .force('charge',d3.forceManyBody().strength(-560))
- .force('x',d3.forceX(W/2).strength(.06))
+ .force('charge',d3.forceManyBody().strength(-430))
+ .force('x',d3.forceX(W/2).strength(.05))
  .force('y',d3.forceY(bandY).strength(.5))
  .force('collide',rectCollide())
  .alphaDecay(.03);
@@ -2396,36 +2396,20 @@ sim.force('collide',rectCollide());
    LAY[L].forEach((n,i)=>{n.ord=i});
   }
  }
- // A layer is a BLOCK, not a row.  The layer holding everything unreachable
- // has 208 claims in it; laid end to end at label width that is a 47,000px
- // line, which is why the strict version collapsed to a 3% zoom and became
- // unreadable.  Each layer therefore wraps into sub-rows of bounded width.
- const ROWW=2600,SUBH=86;
- let top=80;
+ // Hierarchy INFORMS the layout, it does not replace it.  Pinning nodes to
+ // computed slots produced rigid 200-wide rows and was unreadable; the force
+ // layout packs 2D far better.  So the ordering above is used only to seed
+ // positions -- premises start near the things they prove, in an order that
+ // already has few crossings -- and then the ordinary forces take over and
+ // find the shape.
+ const SEED=160;
  for(const L of layers){
   const row=LAY[L];
-  const wide=n=>(n.lbl?n.lbl.w:30)+30;
-  const subs=[[]];let acc=0;
-  for(const n of row){
-   const w=wide(n);
-   if(acc+w>ROWW&&subs[subs.length-1].length){subs.push([]);acc=0}
-   subs[subs.length-1].push(n);acc+=w;
-  }
-  subs.forEach((sub,i)=>{
-   let total=0;for(const n of sub)total+=wide(n);
-   let x=-total/2;
-   for(const n of sub){const w=wide(n);
-    n.slotX=W/2+x+w/2;n.rowY=top+i*SUBH;x+=w}
+  row.forEach((n,i)=>{
+   n.x=W/2+(i-(row.length-1)/2)*SEED;
+   n.y=bandY(n)+(i%2?12:-12);
   });
-  top+=subs.length*SUBH+LGAP;
  }
- for(const n of nodes){n.x=n.slotX;n.y=n.rowY}
- // Hold the computed order: the barycentre pass is what removes crossings,
- // and a strong charge or link pull simply undoes it and returns the hairball.
- sim.force('x',d3.forceX(d=>d.slotX==null?W/2:d.slotX).strength(.5))
-    .force('y',d3.forceY(bandY).strength(.9))
-    .force('charge',d3.forceManyBody().strength(-90).distanceMax(320));
- linkForce.strength(l=>l.kind==='aff'?0:.04);
 })();
 LBL.sort((a,b)=>prio(b.d)-prio(a.d));
 // Soft, not silent: a label is dropped only when it is mostly buried under
@@ -2670,9 +2654,9 @@ function refreshVis(){
   return (a&&a.gone)||(b&&b.gone);
  });
  g.classed('showdead',sd);
- sim.force('charge',d3.forceManyBody()
-  .strength(d=>d.gone?-2:-90).distanceMax(320));
- linkForce.strength(l=>l.kind==='aff'?0:.04);
+ sim.force('charge',d3.forceManyBody().strength(d=>d.gone?-2:-430));
+ linkForce.strength(l=>l.kind==='aff'
+  ?((l.source.gone||l.target.gone)?0:.03+.1*l.w):.5);
  sim.alpha(.5).restart();
  relabel();
 }
