@@ -1965,14 +1965,20 @@ g.deadbit,line.dead{visibility:hidden}
 .showdead g.deadbit,.showdead line.dead{visibility:visible}
 g.orphan{display:none}
 .dim{opacity:.13}
+/* `.lk.dead` is two classes and `.dim` is one, so without these the red
+   obstruction edges kept their own opacity while everything else dimmed --
+   which read as every red edge lighting up whenever anything was focused.
+   Out of focus they fade harder than live edges: an obstruction elsewhere in
+   the graph is noise, not context. */
+.lk.dim,.lk.kill.dim,.lk.dead.dim{opacity:.06}
 g.n,line.lk{transition:opacity .1s ease}
 text.orphan{display:none}
 g.labels text{font:10px __MONO__;fill:var(--mut);paint-order:stroke;
 stroke:var(--paper);stroke-width:3.5px;stroke-linejoin:round}
 g.labels text.hot{fill:var(--ink);font-weight:700}
 g.n.hot circle{stroke-width:3}
-line.lk.hot{stroke:var(--ink);stroke-width:1.9}
-line.lk.kill.hot,line.lk.dead.hot{stroke:var(--dead);stroke-width:1.7}
+line.lk.hot{stroke:var(--ink);stroke-width:1.9;opacity:1}
+line.lk.kill.hot,line.lk.dead.hot{stroke:var(--dead);stroke-width:1.7;opacity:1}
 a.open-page{color:var(--ink);font-size:12.5px;letter-spacing:.02em;
 border-bottom:1px solid var(--rule);text-decoration:none}
 a.open-page:hover{color:var(--accent);border-bottom-color:var(--accent)}
@@ -2251,7 +2257,39 @@ const prio=d=>(d.goal?1e6:0)+(d.frontier?1e4:0)+(d.impact||0)*10
  +(d.status==='ESTABLISHED'?1:0);
 // Wrap to as many lines as the title needs, up to a budget; only titles that
 // genuinely overflow it are elided.  The old two-line cap cut most titles.
-const MAXW=30,MAXL=3;
+// Measured against the corpus: 34 columns over 4 lines shows every claim
+// title in full, so the ellipsis is a genuine last resort rather than the
+// normal case.  Lines are then balanced -- the narrowest width that still
+// fits the same number of lines -- so a label is a tidy block instead of one
+// long line followed by a stray word.
+const MAXW=34,MAXL=4;
+function wrapAt(words,W){
+ const ls=[];let cur='';
+ for(const w of words){
+  const t=cur?cur+' '+w:w;
+  if(t.length<=W||!cur){cur=t;continue}
+  ls.push(cur);cur=w;
+ }
+ if(cur)ls.push(cur);
+ return ls;
+}
+function wrapTitle(title){
+ const words=title.split(' ');
+ let ls=wrapAt(words,MAXW);
+ if(ls.length>1){                       // balance: keep the line count, trim width
+  const n=ls.length;
+  for(let W=Math.ceil(title.length/n);W<MAXW;W++){
+   const t=wrapAt(words,W);
+   if(t.length<=n){ls=t;break}
+  }
+ }
+ if(ls.length<=MAXL)return ls;
+ ls=ls.slice(0,MAXL);
+ let last=ls[MAXL-1];
+ if(last.length>MAXW-1)last=last.slice(0,MAXW-1).replace(/\s+\S*$/,'');
+ ls[MAXL-1]=last+'\u2026';
+ return ls;
+}
 // Labels live in their own layer, created after the node groups so they draw
 // ON TOP: a title half-covered by a neighbouring disc is unreadable, and DOM
 // order is the only z-order SVG has.
@@ -2265,22 +2303,7 @@ const lab=labelLayer.selectAll('text').data(claimNodes).join('text')
  .on('mouseleave',()=>{if(!dragging&&!selected)highlight(null)});
 lab.each(function(d){
  const title=(d.title||'').replace(/\s+/g,' ').trim();
- const words=title.split(' ');
- const lines=[];let cur='';
- for(const w of words){
-  const t=cur?cur+' '+w:w;
-  if(t.length<=MAXW){cur=t;continue}
-  if(cur)lines.push(cur);
-  cur=w;
-  if(lines.length>=MAXL){cur='';break}
- }
- if(cur&&lines.length<MAXL)lines.push(cur);
- if(!lines.length)lines.push(title.slice(0,MAXW));
- if(lines.join(' ').length<title.length){
-  let last=lines[lines.length-1];
-  if(last.length>MAXW-1)last=last.slice(0,MAXW-1).replace(/\s+\S*$/,'');
-  lines[lines.length-1]=last+'\u2026';
- }
+ const lines=title?wrapTitle(title):[''];
  const txt=d3.select(this);
  lines.forEach((ln,i)=>txt.append('tspan').attr('x',0)
   .attr('dy',i?11:(d.goal?36:27)).text(ln));
