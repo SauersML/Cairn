@@ -2029,9 +2029,6 @@ color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
 <header><span class="stats">__STATS__</span>
 <button id="openSearch">search the graph<kbd>/</kbd></button>
 <label><input type="checkbox" id="showdead" checked> failed routes</label>
-<label><input type="checkbox" id="showlib"> library</label>
-<button class="lnk" id="homebtn">goal</button>
-<button class="lnk" id="fitbtn">fit all</button>
 <button class="lnk" id="frontierbtn">frontier</button>
 <a href="nodes.html">all nodes</a></header>
 <main><svg id="view"></svg>
@@ -2083,8 +2080,6 @@ function frontierHome(){
  openPanel();
 }
 document.getElementById('frontierbtn').onclick=frontierHome;
-document.getElementById('homebtn').onclick=()=>{if(window.goHome)goHome()};
-document.getElementById('fitbtn').onclick=()=>{if(window.fitView)fitView()};
 let selectById=id=>{};
 if(typeof d3==='undefined'){
  document.getElementById('view').outerHTML='<div style="padding:2em">d3 CDN unreachable &mdash; use <a href="nodes.html">all nodes</a>.</div>';
@@ -2123,7 +2118,7 @@ for(const n of nodes)
 for(const n of nodes)if(n.type==='stub')
  for(const k of n.killers||[])if(byId[k]&&byId[k].depth==null)byId[k].depth=n.depth+0.5;
 for(const n of nodes)if(n.depth==null)n.depth=maxD+1;
-const GAP=14;   // breathing room between footprints
+const GAP=20;   // breathing room between footprints
 const real=l=>l.kind!=='aff';
 const REAL=links.filter(real);
 const svg=d3.select('#view'),W=svg.node().clientWidth,H=svg.node().clientHeight;
@@ -2131,12 +2126,7 @@ const svg=d3.select('#view'),W=svg.node().clientWidth,H=svg.node().clientHeight;
 // layer per node (half-steps for the junctions and stubs that sit between a
 // claim and its premises), with real vertical separation between layers.
 for(const n of nodes)n.layer=Math.round((n.depth==null?maxD+1:n.depth)*2);
-// Most of a mature graph is LIBRARY: established results that no live route
-// chain to a goal passes through.  Here that is 208 of 321 claims, and drawn
-// all at once they bury the derivation the reader came for.  One checkbox
-// away, not gone.
-for(const c of DATA.claims)if(byId[c.id])byId[c.id].lib=(c.depth==null);
-for(const n of nodes)if(n.type!=='claim'){const t=byId[n.tgt];n.lib=!!(t&&t.lib)}
+
 const LGAP=105;
 // Vertical band per layer: this is the hierarchy, and it is a force pull, not
 // a pin -- the simulation is free to bend it where the structure demands.
@@ -2449,9 +2439,12 @@ function relabel(){
   const w=o.w+LPAD*2,h=o.h+LPAD*2;
   const x0=d.x-w/2,below=d.y+o.top-LPAD;   // absolute box of the default spot
   const up=(d.y-o.rad-6-o.h-LPAD)-below;   // flip above the disc
-  const sx=w*0.5;
-  const cands=[[0,0],[0,up],[0,14],[0,up-14],[sx,0],[-sx,0],
-               [sx,up],[-sx,up],[0,28],[0,up-28]];
+  // ONLY directly under or directly over the node.  Sliding a title sideways
+  // to dodge a collision silently reassigns it to whichever node it lands
+  // near, and leaves its own node looking untitled.  Horizontal separation is
+  // the layout's job -- the collide force moves NODES apart -- not the
+  // label placer's.
+  const cands=[[0,0],[0,up]];
   let best=null,bestScore=Infinity;
   for(const c of cands){
    const b=[x0+c[0],below+c[1],x0+c[0]+w,below+c[1]+h];
@@ -2642,10 +2635,9 @@ function refreshVis(){
  links.forEach(l=>{if(real(l)&&(!l.dead||sd)){
   const a=l.source.id||l.source,b=l.target.id||l.target;
   deg[a]=(deg[a]||0)+1;deg[b]=(deg[b]||0)+1}});
- const lib=document.getElementById('showlib').checked;
  nodes.forEach(d=>{
   d.orphan=d.type==='claim'&&!d.root&&!d.goal&&!d.frontier&&!(deg[d.id]>0);
-  d.gone=(d.lib&&!lib)||d.orphan;
+  d.gone=d.orphan;
  });
  node.classed('orphan',d=>d.gone);
  lab.classed('orphan',d=>d.gone);
@@ -2661,8 +2653,6 @@ function refreshVis(){
  relabel();
 }
 document.getElementById('showdead').onchange=refreshVis;
-document.getElementById('showlib').onchange=()=>{refreshVis();
- setTimeout(()=>{relabelPending=0;relabel()},80)};
 function placeLabels(){
  for(const o of LBL)
   o.el.setAttribute('transform',
@@ -2690,7 +2680,6 @@ function goHome(){
 // Fit once, when the layout has settled: the graph is as wide as it needs to
 // be and the viewport comes to it.  Later zooming is the reader's, so this
 // never fires again.
-window.fitView=fitView;
 function fitView(){
  const live=nodes.filter(n=>!n.gone&&isFinite(n.x)&&isFinite(n.y));
  if(live.length<2)return;
