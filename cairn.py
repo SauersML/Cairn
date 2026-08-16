@@ -2612,9 +2612,6 @@ function ctx(d){
  }
  h+=sec('Rules out',kills.length,kills.map(r=>
    routeRow(r,'a route to '+clink(RT(r).target))));
- const dis=d.dis||{},dk=Object.keys(dis);
- h+=sec('Not to be confused with',dk.length,dk.map(k=>
-   `<li>${clink(k)}<span class="sub">${esc(dis[k])}</span></li>`));
  // failed attempts last: history, not the way forward
  h+=sec('Failed attempts',dead.length,dead.map(r=>routeRow(r)));
  return h;
@@ -2902,7 +2899,6 @@ def generate_site(graph, locks):
             "into": graph.routes_into.get(cid, []),
             "needs": graph.required_by.get(cid, []),
             "kills": [r for r in c.get_list("invalidates") if r in graph.routes],
-            "dis": {k: str(v) for k, v in (c.meta.get("distinct_from") or {}).items()},
             "html": autolink(md_to_html(c.body, idset), idset)})
     # what an open claim would buy, from the same solver the CLI uses
     for rec in data["claims"]:
