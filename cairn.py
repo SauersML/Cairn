@@ -1940,13 +1940,20 @@ text-transform:uppercase;margin:1.9em 0 .4em}
 cursor:pointer;line-height:1.4}
 .fr li:hover{color:var(--accent)}
 .fr .imp{color:var(--mut2);font:10.5px __MONO__}
-.fr.ctx li{cursor:default;display:flex;gap:.55em;align-items:baseline;flex-wrap:wrap}
-.fr.ctx li:hover{color:inherit}
+.fr.ctx{margin:.45em 0 0}
+.fr.ctx li{cursor:default;display:block;padding:.55em 0 .6em .85em;
+border-left:2px solid var(--line);border-bottom:0;margin-bottom:.4em;
+line-height:1.45}
+.fr.ctx li:hover{color:inherit;border-left-color:var(--rule)}
+.fr.ctx .mk{margin-right:.5em;vertical-align:.05em}
 .fr.ctx a{color:var(--ink);border-bottom:1px solid var(--rule);text-decoration:none;
 cursor:pointer}
 .fr.ctx a:hover{color:var(--accent);border-bottom-color:var(--accent)}
-.fr.ctx .sub{flex-basis:100%;color:var(--mut2);font-size:11.5px;margin-top:.15em;
-line-height:1.4}
+.fr.ctx .sub{display:block;color:var(--mut2);font-size:11.5px;margin-top:.28em;
+line-height:1.4;padding-left:.1em}
+.fr.ctx .sub:before{content:"\21B3\A0";color:var(--rule)}
+h3.sec .ct{margin-left:.6em;color:var(--mut2);font-weight:400;
+letter-spacing:0;font-family:__MONO__;font-size:10px}
 .mk{flex:none;font-size:9.5px;font-weight:700;letter-spacing:.08em;
 text-transform:uppercase;padding:.15em .5em;border:1px solid var(--line)}
 .mk.ok{color:var(--est);border-color:#178a5e55}
@@ -1964,6 +1971,7 @@ opacity:.75}
 g.deadbit,line.dead{visibility:hidden}
 .showdead g.deadbit,.showdead line.dead{visibility:visible}
 g.orphan{display:none}
+line.gone{display:none}
 .dim{opacity:.13}
 /* `.lk.dead` is two classes and `.dim` is one, so without these the red
    obstruction edges kept their own opacity while everything else dimmed --
@@ -2021,6 +2029,9 @@ color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
 <header><span class="stats">__STATS__</span>
 <button id="openSearch">search the graph<kbd>/</kbd></button>
 <label><input type="checkbox" id="showdead" checked> failed routes</label>
+<label><input type="checkbox" id="showlib"> library</label>
+<button class="lnk" id="homebtn">goal</button>
+<button class="lnk" id="fitbtn">fit all</button>
 <button class="lnk" id="frontierbtn">frontier</button>
 <a href="nodes.html">all nodes</a></header>
 <main><svg id="view"></svg>
@@ -2072,6 +2083,8 @@ function frontierHome(){
  openPanel();
 }
 document.getElementById('frontierbtn').onclick=frontierHome;
+document.getElementById('homebtn').onclick=()=>{if(window.goHome)goHome()};
+document.getElementById('fitbtn').onclick=()=>{if(window.fitView)fitView()};
 let selectById=id=>{};
 if(typeof d3==='undefined'){
  document.getElementById('view').outerHTML='<div style="padding:2em">d3 CDN unreachable &mdash; use <a href="nodes.html">all nodes</a>.</div>';
@@ -2114,8 +2127,21 @@ const GAP=14;   // breathing room between footprints
 const real=l=>l.kind!=='aff';
 const REAL=links.filter(real);
 const svg=d3.select('#view'),W=svg.node().clientWidth,H=svg.node().clientHeight;
-const bandY=d=>70+(H-150)*(d.depth/(maxD+2));
-nodes.forEach(n=>{n.y=bandY(n);n.x=W/2+(Math.random()-.5)*W*.7});
+// The graph is a derivation, so the layout should read as one: an integer
+// layer per node (half-steps for the junctions and stubs that sit between a
+// claim and its premises), with real vertical separation between layers.
+for(const n of nodes)n.layer=Math.round((n.depth==null?maxD+1:n.depth)*2);
+// Most of a mature graph is LIBRARY: established results that no live route
+// chain to a goal passes through.  Here that is 208 of 321 claims, and drawn
+// all at once they bury the derivation the reader came for.  One checkbox
+// away, not gone.
+for(const c of DATA.claims)if(byId[c.id])byId[c.id].lib=(c.depth==null);
+for(const n of nodes)if(n.type!=='claim'){const t=byId[n.tgt];n.lib=!!(t&&t.lib)}
+const LGAP=105;
+// bandY is a first guess only; the layered pass below computes a real row for
+// every node, and rowY reads that once it exists.
+const bandY=d=>d.rowY!=null?d.rowY:80+d.layer*LGAP;
+nodes.forEach(n=>{n.y=bandY(n);n.x=W/2+(Math.random()-.5)*W*.5});
 svg.append('defs').html('<marker id="m" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#17171459"/></marker><marker id="mr" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#c43c2e"/></marker>');
 const g=svg.append('g');
 const zoom=d3.zoom().scaleExtent([.2,3.5])
@@ -2134,6 +2160,8 @@ svg.call(zoom).on('dblclick.zoom',null);
 // why text kept colliding however cleverly it was placed.
 function setRects(d){
  const rad=(d.type==='claim'?(d.goal?23:12):(d.type==='junction'?11:8))+3;
+ // a goal also carries its GOAL caption above the ring, which a title
+ // flipped overhead would otherwise land on top of
  const r=[[-rad,-rad,rad,rad]];
  const L=d.lbl;
  if(L){
@@ -2224,10 +2252,9 @@ node.filter(d=>d.type==='claim').append('circle')
  .attr('fill',d=>d.status==='ESTABLISHED'?'var(--est)':'#fff')
  .attr('stroke',d=>d.status==='ESTABLISHED'?'#0f6b47':'var(--open)')
  .attr('stroke-width',2.2);
-node.filter(d=>d.type==='claim'&&d.goal).append('text')
- .attr('text-anchor','middle').attr('dy',-31)
- .style('fill','var(--goal)').style('font-weight','700')
- .style('letter-spacing','.2em').text('GOAL');
+// no GOAL caption: it is a second label on the same node and always fought
+// the title for the space above the ring.  The double ring and the legend
+// carry the meaning.
 // A square carrying the conjunction sign: edges meet a box cleanly, the
 // filled face is a real hit target, and the sign is geometry rather than a
 // 9px text glyph -- as text it inherited the label halo, a paper-coloured
@@ -2318,6 +2345,88 @@ lab.each(function(d){
 for(const n of nodes)setRects(n);
 linkForce.distance(linkDist);
 sim.force('collide',rectCollide());
+
+// ---- hierarchy ------------------------------------------------------------
+// Layers alone are not structure: what makes a derivation readable is the
+// ORDER within each layer, so premises sit under the thing they prove and
+// edges stop crossing.  Three passes, all standard layered-DAG practice:
+//   components  -- disjoint regions are laid side by side, so a tangle stays
+//                  a local tangle instead of threading through everything;
+//   barycentre  -- sweep down and up, putting each node at the average
+//                  position of its neighbours in the adjacent layers, which
+//                  is what actually removes crossings;
+//   slots       -- x by accumulated label width, so a row cannot self-overlap.
+// The result anchors the simulation rather than replacing it: the force still
+// resolves label collisions, but it starts from, and is held near, a shape
+// that reflects the dependency structure.
+(function layout(){
+ const par={},find=x=>{while(par[x]!==x)x=par[x]=par[par[x]];return x};
+ for(const n of nodes)par[n.id]=n.id;
+ const adj={};for(const n of nodes)adj[n.id]=[];
+ for(const l of REAL){
+  const a=l.source.id||l.source,b=l.target.id||l.target;
+  if(adj[a]&&adj[b]){adj[a].push(b);adj[b].push(a);
+   const ra=find(a),rb=find(b);if(ra!==rb)par[ra]=rb;}
+ }
+ const bucket={};
+ for(const n of nodes)(bucket[find(n.id)]=bucket[find(n.id)]||[]).push(n);
+ const comps=Object.keys(bucket).sort((a,b)=>bucket[b].length-bucket[a].length);
+ comps.forEach((r,i)=>bucket[r].forEach(n=>{n.comp=i}));
+
+ const LAY={};
+ for(const n of nodes)(LAY[n.layer]=LAY[n.layer]||[]).push(n);
+ const layers=Object.keys(LAY).map(Number).sort((a,b)=>a-b);
+ const norm=n=>{const row=LAY[n.layer];return row.length>1?n.ord/(row.length-1):.5};
+ for(const L of layers){
+  LAY[L].sort((a,b)=>a.comp-b.comp||(a.title||a.id).localeCompare(b.title||b.id));
+  LAY[L].forEach((n,i)=>{n.ord=i});
+ }
+ for(let it=0;it<8;it++){
+  const seq=(it%2)?layers.slice().reverse():layers;
+  for(const L of seq){
+   for(const n of LAY[L]){
+    let sum=0,c=0;
+    for(const m of adj[n.id]){
+     const o=byId[m];
+     if(o&&o.layer!==L&&o.ord!=null){sum+=norm(o);c++}
+    }
+    n.bary=c?sum/c:norm(n);
+   }
+   LAY[L].sort((a,b)=>a.comp-b.comp||a.bary-b.bary);
+   LAY[L].forEach((n,i)=>{n.ord=i});
+  }
+ }
+ // A layer is a BLOCK, not a row.  The layer holding everything unreachable
+ // has 208 claims in it; laid end to end at label width that is a 47,000px
+ // line, which is why the strict version collapsed to a 3% zoom and became
+ // unreadable.  Each layer therefore wraps into sub-rows of bounded width.
+ const ROWW=2600,SUBH=86;
+ let top=80;
+ for(const L of layers){
+  const row=LAY[L];
+  const wide=n=>(n.lbl?n.lbl.w:30)+30;
+  const subs=[[]];let acc=0;
+  for(const n of row){
+   const w=wide(n);
+   if(acc+w>ROWW&&subs[subs.length-1].length){subs.push([]);acc=0}
+   subs[subs.length-1].push(n);acc+=w;
+  }
+  subs.forEach((sub,i)=>{
+   let total=0;for(const n of sub)total+=wide(n);
+   let x=-total/2;
+   for(const n of sub){const w=wide(n);
+    n.slotX=W/2+x+w/2;n.rowY=top+i*SUBH;x+=w}
+  });
+  top+=subs.length*SUBH+LGAP;
+ }
+ for(const n of nodes){n.x=n.slotX;n.y=n.rowY}
+ // Hold the computed order: the barycentre pass is what removes crossings,
+ // and a strong charge or link pull simply undoes it and returns the hairball.
+ sim.force('x',d3.forceX(d=>d.slotX==null?W/2:d.slotX).strength(.5))
+    .force('y',d3.forceY(bandY).strength(.9))
+    .force('charge',d3.forceManyBody().strength(-90).distanceMax(320));
+ linkForce.strength(l=>l.kind==='aff'?0:.04);
+})();
 LBL.sort((a,b)=>prio(b.d)-prio(a.d));
 // Soft, not silent: a label is dropped only when it is mostly buried under
 // one already placed, and a goal, root or frontier claim is never dropped --
@@ -2345,14 +2454,14 @@ function relabel(){
  const sd=document.getElementById('showdead').checked;
  const placed=[],discs=[];
  for(const n of nodes){
-  if(n.orphan||(n.dead&&!sd)||!isFinite(n.x))continue;
+  if(n.gone||(n.dead&&!sd)||!isFinite(n.x))continue;
   const r=(n.type==='claim'?(n.goal?23:12):9)+2;
-  discs.push([n.x-r,n.y-r,n.x+r,n.y+r]);
+  discs.push([n.x-r,n.y-r,n.x+r,n.y+r,n]);
  }
  for(const o of LBL){
   const d=o.d;
   o.el.classList.remove('hidelabel');
-  if(!isFinite(d.x))continue;
+  if(d.gone||!isFinite(d.x))continue;
   const w=o.w+LPAD*2,h=o.h+LPAD*2;
   const x0=d.x-w/2,below=d.y+o.top-LPAD;   // absolute box of the default spot
   const up=(d.y-o.rad-6-o.h-LPAD)-below;   // flip above the disc
@@ -2364,7 +2473,8 @@ function relabel(){
    const b=[x0+c[0],below+c[1],x0+c[0]+w,below+c[1]+h];
    let sc=0;
    for(let i=0;i<placed.length;i++)sc+=ovl(b,placed[i]);
-   for(let i=0;i<discs.length;i++)sc+=ovl(b,discs[i])*1.6;
+   for(let i=0;i<discs.length;i++)
+    if(discs[i][4]!==d)sc+=ovl(b,discs[i])*1.6;
    if(sc<bestScore){bestScore=sc;best=[c,b];if(sc===0)break}
   }
   setPos(o,best[0][0],best[0][1]);
@@ -2479,51 +2589,49 @@ function routeMark(rid){
  if(r.status==='COMPLETE')return '<span class="mk ok">proves it</span>';
  return `<span class="mk open">needs ${(r.blocked||[]).length}</span>`;
 }
+function sec(label,n,rows){
+ if(!rows.length)return '';
+ return `<h3 class="sec">${label}<span class="ct">${n}</span></h3>`
+  +'<ul class="fr ctx">'+rows.join('')+'</ul>';
+}
+function routeRow(rid,note){
+ const r=RT(rid),k=r.killers||[],bl=r.blocked||[];
+ let sub='';
+ if(note)sub+=`<span class="sub">${note}</span>`;
+ if(k.length)sub+=`<span class="sub">ruled out by ${k.map(clink).join(', ')}</span>`;
+ else if(bl.length)sub+=`<span class="sub">still needs ${bl.map(clink).join(', ')}</span>`;
+ return `<li>${routeMark(rid)}${rlink(rid)}${sub}</li>`;
+}
 function ctx(d){
  let h='';
  const into=d.into||[],needs=d.needs||[],kills=d.kills||[];
  if(d.status==='ESTABLISHED'&&d.via)
-  h+=`<h3 class="sec">Established by</h3><ul class="fr ctx"><li>${rlink(d.via)}</li></ul>`;
- const tried=into.filter(r=>r!==d.via);
- if(tried.length){
-  h+=`<h3 class="sec">${d.status==='ESTABLISHED'?'Other routes':'Routes tried'}</h3><ul class="fr ctx">`;
-  for(const r of tried){
-   const k=RT(r).killers||[],bl=RT(r).blocked||[];
-   h+=`<li>${routeMark(r)} ${rlink(r)}`
-    +(k.length?`<span class="sub">ruled out by ${k.map(clink).join(', ')}</span>`:'')
-    +(bl.length&&!RT(r).dead?`<span class="sub">waiting on ${bl.map(clink).join(', ')}</span>`:'')
-    +'</li>';
-  }
-  h+='</ul>';
- }
+  h+=sec('Established by',1,[routeRow(d.via)]);
+ const live=into.filter(r=>r!==d.via&&!RT(r).dead);
+ const dead=into.filter(r=>r!==d.via&&RT(r).dead);
+ h+=sec(d.status==='ESTABLISHED'?'Other routes':'Routes open',live.length,
+        live.map(r=>routeRow(r)));
  if(!into.length&&d.status!=='ESTABLISHED')
-  h+='<h3 class="sec">Routes tried</h3><p class="hint">None — nothing in the graph yet proposes how to get this.</p>';
- if(needs.length){
-  h+='<h3 class="sec">Needed by</h3><ul class="fr ctx">';
-  for(const r of needs)h+=`<li>${rlink(r)}<span class="sub">to establish ${clink(RT(r).target)}</span></li>`;
-  h+='</ul>';
- }
+  h+='<h3 class="sec">Routes</h3><p class="hint">None — nothing in the graph yet proposes how to get this.</p>';
+ h+=sec('Needed by',needs.length,needs.map(r=>
+   routeRow(r,'establishes '+clink(RT(r).target))));
  const g=d.gives;
- if(g&&(g.claims.length||g.routes.length)){
-  h+='<h3 class="sec">If established</h3><ul class="fr ctx">';
-  for(const c of g.claims.slice(0,10))
-   h+=`<li><span class="mk ok">unlocks</span> ${clink(c)}</li>`;
-  if(g.claims.length>10)h+=`<li class="hint">…and ${g.claims.length-10} more</li>`;
-  for(const r of g.routes.slice(0,6))
-   h+=`<li><span class="mk dead">closes</span> ${rlink(r)}</li>`;
-  h+='</ul>';
+ if(g){
+  const rows=g.claims.slice(0,12).map(c=>
+    `<li><span class="mk ok">unlocks</span>${clink(c)}</li>`);
+  if(g.claims.length>12)
+   rows.push(`<li class="hint">…and ${g.claims.length-12} more</li>`);
+  for(const r of g.routes.slice(0,8))
+   rows.push(`<li><span class="mk dead">closes</span>${rlink(r)}</li>`);
+  h+=sec('If established',g.claims.length+g.routes.length,rows);
  }
- if(kills.length){
-  h+='<h3 class="sec">Rules out</h3><ul class="fr ctx">';
-  for(const r of kills)h+=`<li>${rlink(r)}<span class="sub">a route to ${clink(RT(r).target)}</span></li>`;
-  h+='</ul>';
- }
+ h+=sec('Rules out',kills.length,kills.map(r=>
+   routeRow(r,'a route to '+clink(RT(r).target))));
  const dis=d.dis||{},dk=Object.keys(dis);
- if(dk.length){
-  h+='<h3 class="sec">Not to be confused with</h3><ul class="fr ctx">';
-  for(const k of dk)h+=`<li>${clink(k)}<span class="sub">${esc(dis[k])}</span></li>`;
-  h+='</ul>';
- }
+ h+=sec('Not to be confused with',dk.length,dk.map(k=>
+   `<li>${clink(k)}<span class="sub">${esc(dis[k])}</span></li>`));
+ // failed attempts last: history, not the way forward
+ h+=sec('Failed attempts',dead.length,dead.map(r=>routeRow(r)));
  return h;
 }
 function show(d){
@@ -2550,17 +2658,27 @@ function refreshVis(){
  links.forEach(l=>{if(real(l)&&(!l.dead||sd)){
   const a=l.source.id||l.source,b=l.target.id||l.target;
   deg[a]=(deg[a]||0)+1;deg[b]=(deg[b]||0)+1}});
- nodes.forEach(d=>{d.orphan=d.type==='claim'&&!d.root&&!d.goal&&!d.frontier&&!(deg[d.id]>0)});
- node.classed('orphan',d=>d.orphan);
- lab.classed('orphan',d=>d.orphan);
+ const lib=document.getElementById('showlib').checked;
+ nodes.forEach(d=>{
+  d.orphan=d.type==='claim'&&!d.root&&!d.goal&&!d.frontier&&!(deg[d.id]>0);
+  d.gone=(d.lib&&!lib)||d.orphan;
+ });
+ node.classed('orphan',d=>d.gone);
+ lab.classed('orphan',d=>d.gone);
+ line.classed('gone',l=>{
+  const a=byId[l.source.id||l.source],b=byId[l.target.id||l.target];
+  return (a&&a.gone)||(b&&b.gone);
+ });
  g.classed('showdead',sd);
- sim.force('charge',d3.forceManyBody().strength(d=>d.orphan?-10:-560));
- linkForce.strength(l=>l.kind==='aff'
-  ?((l.source.orphan||l.target.orphan)?0:.03+.1*l.w):.5);
+ sim.force('charge',d3.forceManyBody()
+  .strength(d=>d.gone?-2:-90).distanceMax(320));
+ linkForce.strength(l=>l.kind==='aff'?0:.04);
  sim.alpha(.5).restart();
  relabel();
 }
 document.getElementById('showdead').onchange=refreshVis;
+document.getElementById('showlib').onchange=()=>{refreshVis();
+ setTimeout(()=>{relabelPending=0;relabel()},80)};
 function placeLabels(){
  for(const o of LBL)
   o.el.setAttribute('transform',
@@ -2574,11 +2692,23 @@ sim.on('tick',()=>{
  scheduleRelabel();
 });
 let fitted=false;
+// Fitting 438 labelled nodes into a viewport means a 0.3 scale at best, where
+// the text is 3px tall.  So the graph does not open fitted: it opens at the
+// goal, at a size you can read, and the reader pans or hits `fit`.
+window.goHome=goHome;
+function goHome(){
+ const target=nodes.find(n=>n.goal)||nodes.find(n=>n.root)||nodes[0];
+ if(!target||!isFinite(target.x))return;
+ const k=0.85;
+ svg.transition().duration(500).call(zoom.transform,
+  d3.zoomIdentity.translate(W/2-k*target.x,H*0.28-k*target.y).scale(k));
+}
 // Fit once, when the layout has settled: the graph is as wide as it needs to
 // be and the viewport comes to it.  Later zooming is the reader's, so this
 // never fires again.
+window.fitView=fitView;
 function fitView(){
- const live=nodes.filter(n=>!n.orphan&&isFinite(n.x)&&isFinite(n.y));
+ const live=nodes.filter(n=>!n.gone&&isFinite(n.x)&&isFinite(n.y));
  if(live.length<2)return;
  let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
  for(const n of live){
@@ -2591,7 +2721,7 @@ function fitView(){
   .translate(W/2-k*(x0+x1)/2,H/2-k*(y0+y1)/2).scale(k));
 }
 sim.on('end',()=>{relabelPending=0;relabel();
- if(!fitted){fitted=true;fitView()}});
+ if(!fitted){fitted=true;goHome()}});
 // Centre on a node without losing the reader's zoom level.
 window.focusNode=function(d){
  const t=d3.zoomTransform(svg.node());
