@@ -1900,7 +1900,8 @@ header a{color:var(--mut2);text-decoration:none;font-size:11px;
 letter-spacing:.14em;text-transform:uppercase}
 header a:hover{color:var(--accent)}
 main{position:relative;height:calc(100% - 45px);overflow:hidden}
-#view{display:block;width:100%;height:100%;cursor:grab;background:var(--paper)}
+#view{display:block;width:100%;height:100%;cursor:default;background:var(--paper)}
+#view:active{cursor:grabbing}
 aside{position:absolute;top:0;right:0;bottom:0;width:27em;max-width:92vw;
 background:var(--paper);border-left:1px solid var(--line);
 padding:1.4em 1.6em 3em;overflow-y:auto;box-sizing:border-box;
@@ -2008,7 +2009,7 @@ color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="7.6" fill="none" stroke="#4f46e5" stroke-width="1.8"/><circle cx="9" cy="8" r="4.6" fill="#fff" stroke="#c08a00" stroke-width="2"/></svg>goal</span>
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="6" fill="#178a5e"/></svg>established</span>
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="6" fill="#fff" stroke="#c08a00" stroke-width="2.2"/></svg>open</span>
-<span><svg width="22" height="16"><rect x="4" y="3" width="10" height="10" fill="#8b8f86"/></svg>&and; multi-premise route</span>
+<span><svg width="22" height="16"><rect x="3" y="2" width="12" height="12" fill="#fff" stroke="#171714" stroke-width="1.3"/><path d="M6,10.5 L9,5.5 L12,10.5" fill="none" stroke="#171714" stroke-width="1.6" stroke-linejoin="miter"/></svg>multi-premise route (&and;)</span>
 <span><svg width="27" height="16"><line x1="1" y1="8" x2="20" y2="8" stroke="#17171459" stroke-width="1.5"/><path d="M19,4.5L25,8L19,11.5z" fill="#17171459"/></svg>premises &#10230; target</span>
 <span><svg width="27" height="16"><line x1="1" y1="8" x2="20" y2="8" stroke="#c43c2e" stroke-width="1.3" stroke-dasharray="5,3"/><path d="M19,4.5L25,8L19,11.5z" fill="#c43c2e"/></svg>failed / invalidated</span>
 </div>
@@ -2065,15 +2066,19 @@ for(const j of DATA.junctions){
  const jn={id:'j:'+j.route,type:'junction',route:j.route,rtitle:j.title,
   requires:j.requires,tgt:j.target,dead:j.dead};
  nodes.push(jn);byId[jn.id]=jn;
- for(const q of j.requires)links.push({source:q,target:jn.id,kind:'in',dead:j.dead});
- links.push({source:jn.id,target:j.target,kind:'arrow',dead:j.dead});
+ for(const q of j.requires)links.push({source:q,target:jn.id,kind:'in',
+  route:j.route,title:j.title,dead:j.dead});
+ links.push({source:jn.id,target:j.target,kind:'arrow',
+  route:j.route,title:j.title,dead:j.dead});
 }
 for(const d of DATA.dead){
  const st={id:'x:'+d.route,type:'stub',route:d.route,rtitle:d.title,
   tgt:d.target,killers:d.killers,dead:true};
  nodes.push(st);byId[st.id]=st;
- links.push({source:st.id,target:d.target,kind:'arrow',dead:true});
- for(const k of d.killers)if(byId[k])links.push({source:k,target:st.id,kind:'kill',dead:true});
+ links.push({source:st.id,target:d.target,kind:'arrow',
+  route:d.route,title:d.title,dead:true});
+ for(const k of d.killers)if(byId[k])links.push({source:k,target:st.id,
+  kind:'kill',route:d.route,title:d.title,dead:true});
 }
 for(const a of DATA.affinity)links.push({source:a.a,target:a.b,kind:'aff',w:a.w});
 // hierarchy: goals at depth 0, each claim at its derivation distance;
@@ -2087,6 +2092,7 @@ for(const n of nodes)if(n.type==='stub')
  for(const k of n.killers||[])if(byId[k]&&byId[k].depth==null)byId[k].depth=n.depth+0.5;
 for(const n of nodes)if(n.depth==null)n.depth=maxD+1;
 const real=l=>l.kind!=='aff';
+const REAL=links.filter(real);
 const svg=d3.select('#view'),W=svg.node().clientWidth,H=svg.node().clientHeight;
 const bandY=d=>70+(H-150)*(d.depth/(maxD+2));
 nodes.forEach(n=>{n.y=bandY(n);n.x=W/2+(Math.random()-.5)*W*.7});
@@ -2095,21 +2101,23 @@ const g=svg.append('g');
 const zoom=d3.zoom().scaleExtent([.2,3.5])
  .on('zoom',e=>{g.attr('transform',e.transform)});
 svg.call(zoom).on('dblclick.zoom',null);
+// These constants are the layout: strong repulsion and a weak pull to the
+// centre line are what open the derivation bands out into a readable shape.
+// Do not tighten them to make the graph narrower -- that collapses it into a
+// ball with no structure.  Width is handled after settling, by fitting the
+// view to the graph rather than by squeezing the graph into the view.
 const linkForce=d3.forceLink(links).id(d=>d.id)
- .distance(l=>l.kind==='aff'?120:(l.kind==='in'?55:95))
+ .distance(l=>l.kind==='aff'?150:(l.kind==='in'?60:115))
  .strength(l=>l.kind==='aff'?.03+.1*l.w:.55);
-// Repulsion accumulates with node count, so a constant charge that suits a
-// small graph flings a large one into a very wide, thin band: scale it down,
-// cap its reach, and pull harder toward the centre line.
-const CH=-Math.max(150,Math.min(430,9000/Math.sqrt(nodes.length||1)));
 const sim=d3.forceSimulation(nodes)
  .force('link',linkForce)
- .force('charge',d3.forceManyBody().strength(CH).distanceMax(520))
- .force('x',d3.forceX(W/2).strength(.11))
+ .force('charge',d3.forceManyBody().strength(-430))
+ .force('x',d3.forceX(W/2).strength(.06))
  .force('y',d3.forceY(bandY).strength(.5))
- .force('collide',d3.forceCollide(d=>d.type==='claim'?(d.goal?48:38):13))
- .alphaDecay(.045).velocityDecay(.45);
-const line=g.selectAll('line').data(links.filter(real)).join('line')
+ .force('collide',d3.forceCollide(d=>d.type==='claim'?(d.goal?48:38)
+  :(d.type==='junction'?16:13)))
+ .alphaDecay(.035);
+const line=g.selectAll('line').data(REAL).join('line')
  .attr('class',l=>'lk'+(l.kind==='kill'?' kill':'')+(l.dead?' dead':''))
  .attr('marker-end',l=>l.kind==='in'?null:(l.dead||l.kind==='kill'?'url(#mr)':'url(#m)'))
  .style('cursor',l=>l.route?'pointer':null)
@@ -2135,12 +2143,24 @@ node.filter(d=>d.type==='claim'&&d.goal).append('text')
  .attr('text-anchor','middle').attr('dy',-31)
  .style('fill','var(--goal)').style('font-weight','700')
  .style('letter-spacing','.2em').text('GOAL');
-node.filter(d=>d.type==='junction').append('rect')
- .attr('x',-6).attr('y',-6).attr('width',12).attr('height',12)
- .attr('fill',d=>d.dead?'var(--dead)':'#9a9e94');
-node.filter(d=>d.type==='junction').append('text')
- .attr('text-anchor','middle').attr('dy',3.5)
- .style('fill','#fff').style('font-size','9px').text('\u2227');
+// A square carrying the conjunction sign: edges meet a box cleanly, the
+// filled face is a real hit target, and the sign is geometry rather than a
+// 9px text glyph -- as text it inherited the label halo, a paper-coloured
+// stroke around a tiny character, i.e. a blob at any zoom.
+const jn=node.filter(d=>d.type==='junction');
+jn.append('rect')
+ .attr('x',-9).attr('y',-9).attr('width',18).attr('height',18)
+ .attr('fill','var(--paper)')
+ .attr('stroke',d=>d.dead?'var(--dead)':'var(--ink)')
+ .attr('stroke-width',1.6).attr('shape-rendering','crispEdges');
+jn.append('path')
+ .attr('d','M-4.4,3.2 L0,-4 L4.4,3.2')
+ .attr('fill','none')
+ .attr('stroke',d=>d.dead?'var(--dead)':'var(--ink)')
+ .attr('stroke-width',2)
+ .attr('stroke-linejoin','miter').attr('stroke-linecap','butt')
+ .attr('pointer-events','none')
+ .attr('shape-rendering','geometricPrecision');
 node.filter(d=>d.type==='stub').append('circle')
  .attr('r',6.5).attr('fill','#fff').attr('stroke','var(--dead)')
  .attr('stroke-width',1.7).attr('stroke-dasharray','3 2');
@@ -2150,18 +2170,33 @@ node.filter(d=>d.type==='stub').append('circle')
 const LBL=[];
 const prio=d=>(d.goal?1e6:0)+(d.frontier?1e4:0)+(d.impact||0)*10
  +(d.status==='ESTABLISHED'?1:0);
+// Wrap to as many lines as the title needs, up to a budget; only titles that
+// genuinely overflow it are elided.  The old two-line cap cut most titles.
+const MAXW=30,MAXL=3;
 node.filter(d=>d.type==='claim').each(function(d){
- let l1='',l2='';
- for(const w of d.title.split(' ')){
-  if(!l2&&(l1+' '+w).trim().length<=26)l1=(l1+' '+w).trim();
-  else l2=(l2+' '+w).trim();
+ const title=(d.title||'').replace(/\\s+/g,' ').trim();
+ const words=title.split(' ');
+ const lines=[];let cur='';
+ for(const w of words){
+  const t=cur?cur+' '+w:w;
+  if(t.length<=MAXW){cur=t;continue}
+  if(cur)lines.push(cur);
+  cur=w;
+  if(lines.length>=MAXL){cur='';break}
  }
- if(l2.length>28)l2=l2.slice(0,27)+'\\u2026';
+ if(cur&&lines.length<MAXL)lines.push(cur);
+ if(!lines.length)lines.push(title.slice(0,MAXW));
+ if(lines.join(' ').length<title.length){
+  let last=lines[lines.length-1];
+  if(last.length>MAXW-1)last=last.slice(0,MAXW-1).replace(/\\s+\\S*$/,'');
+  lines[lines.length-1]=last+'\\u2026';
+ }
  const txt=d3.select(this).append('text').attr('text-anchor','middle');
- txt.append('tspan').attr('x',0).attr('dy',d.goal?36:27).text(l1);
- if(l2)txt.append('tspan').attr('x',0).attr('dy',11).text(l2);
- LBL.push({d:d,el:txt.node(),w:Math.max(l1.length,l2.length)*5.9+8,
-  h:l2?25:14,top:d.goal?28:19});
+ lines.forEach((ln,i)=>txt.append('tspan').attr('x',0)
+  .attr('dy',i?11:(d.goal?36:27)).text(ln));
+ LBL.push({d:d,el:txt.node(),
+  w:Math.max.apply(null,lines.map(l=>l.length))*5.9+8,
+  h:lines.length*11+4,top:d.goal?28:19});
 });
 LBL.sort((a,b)=>prio(b.d)-prio(a.d));
 // Soft, not silent: a label is dropped only when it is mostly buried under
@@ -2209,26 +2244,37 @@ node.append('title').text(d=>d.type==='claim'?`${d.id} [${d.status}]`:(d.rtitle|
 // A route is highlighted whole -- reaching a junction or a stub pulls in its
 // other endpoints, so a multi-premise route never lights up half-drawn.
 let selected=null;
-function nbrs(d){
- const keep=new Set([d.id]),ends=l=>[l.source.id||l.source,l.target.id||l.target];
- const rl=links.filter(real);
- rl.forEach(l=>{const[a,b]=ends(l);
-  if(a===d.id)keep.add(b);if(b===d.id)keep.add(a)});
- rl.forEach(l=>{const[a,b]=ends(l),A=byId[a],B=byId[b];
-  const hub=x=>x&&(x.type==='junction'||x.type==='stub');
-  if(hub(A)&&keep.has(a))keep.add(b);
-  if(hub(B)&&keep.has(b))keep.add(a)});
- return keep;
+const _ends=l=>[l.source.id||l.source,l.target.id||l.target];
+// Focus is defined by ROUTE MEMBERSHIP, not by walking the graph.  Expanding
+// through neighbours pulled in whole unrelated routes: a hub is adjacent to
+// its premises, its premises are adjacent to their own other routes, and the
+// obstruction edges of every dead route sharing a killer came along too --
+// which is why unrelated red edges lit up.  An edge belongs to exactly one
+// route, so the set is exactly the edges of the routes that touch this node.
+function focusSet(d){
+ const routes=new Set(),keep=new Set([d.id]),edges=new Set();
+ if(d.type==='claim'){
+  for(const l of REAL){
+   const[a,b]=_ends(l);
+   if((a===d.id||b===d.id)&&l.route)routes.add(l.route);
+  }
+ }else if(d.route)routes.add(d.route);
+ for(const l of REAL){
+  const[a,b]=_ends(l);
+  const mine=(l.route&&routes.has(l.route))||a===d.id||b===d.id;
+  if(mine){edges.add(l);keep.add(a);keep.add(b)}
+ }
+ return {keep,edges};
 }
 function highlight(d){
  if(!d){g.classed('focus',false);
   node.classed('dim',false).classed('hot',false);
   line.classed('dim',false).classed('hot',false);return}
- const keep=nbrs(d);
+ const {keep,edges}=focusSet(d);
  g.classed('focus',true);
  node.classed('dim',n=>!keep.has(n.id)).classed('hot',n=>n.id===d.id);
- line.classed('dim',l=>!(keep.has(l.source.id)&&keep.has(l.target.id)))
-     .classed('hot',l=>l.source.id===d.id||l.target.id===d.id);
+ line.classed('dim',l=>!edges.has(l))
+     .classed('hot',l=>{const[a,b]=_ends(l);return a===d.id||b===d.id});
 }
 // Guards, because the layout moves under a still cursor: without them the
 // graph fires enter/leave at itself while you drag or while it settles, and
@@ -2295,8 +2341,7 @@ function refreshVis(){
  nodes.forEach(d=>{d.orphan=d.type==='claim'&&!d.root&&!d.goal&&!d.frontier&&!(deg[d.id]>0)});
  node.classed('orphan',d=>d.orphan);
  g.classed('showdead',sd);
- sim.force('charge',d3.forceManyBody()
-  .strength(d=>d.orphan?-10:CH).distanceMax(520));
+ sim.force('charge',d3.forceManyBody().strength(d=>d.orphan?-10:-430));
  linkForce.strength(l=>l.kind==='aff'
   ?((l.source.orphan||l.target.orphan)?0:.03+.1*l.w):.5);
  sim.alpha(.5).restart();
@@ -2309,7 +2354,25 @@ sim.on('tick',()=>{
  node.attr('transform',d=>`translate(${d.x},${d.y})`);
  scheduleRelabel();
 });
-sim.on('end',()=>{relabelPending=0;relabel()});
+let fitted=false;
+// Fit once, when the layout has settled: the graph is as wide as it needs to
+// be and the viewport comes to it.  Later zooming is the reader's, so this
+// never fires again.
+function fitView(){
+ const live=nodes.filter(n=>!n.orphan&&isFinite(n.x)&&isFinite(n.y));
+ if(live.length<2)return;
+ let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+ for(const n of live){
+  if(n.x<x0)x0=n.x;if(n.x>x1)x1=n.x;
+  if(n.y<y0)y0=n.y;if(n.y>y1)y1=n.y;
+ }
+ const pad=90,w=Math.max(1,x1-x0)+pad*2,h=Math.max(1,y1-y0)+pad*2;
+ const k=Math.max(.2,Math.min(1.6,Math.min(W/w,H/h)));
+ svg.transition().duration(500).call(zoom.transform,d3.zoomIdentity
+  .translate(W/2-k*(x0+x1)/2,H/2-k*(y0+y1)/2).scale(k));
+}
+sim.on('end',()=>{relabelPending=0;relabel();
+ if(!fitted){fitted=true;fitView()}});
 // Centre on a node without losing the reader's zoom level.
 window.focusNode=function(d){
  const t=d3.zoomTransform(svg.node());
