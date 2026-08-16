@@ -1136,26 +1136,205 @@ def generate_frontier_md(graph, locks):
 STATUS_COLOR = {"OPEN": "#c08a00", "ESTABLISHED": "#178a5e",
                 "COMPLETE": "#178a5e", "INVALIDATED": "#c43c2e"}
 GOAL_COLOR = "#4f46e5"
-SANS = ('-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,'
-        'Helvetica,Arial,sans-serif')
+SANS = 'Arial,Helvetica,ui-sans-serif,system-ui,sans-serif'
+MONO = 'ui-monospace,SFMono-Regular,Menlo,Consolas,monospace'
+# One ink on pure paper: every non-status colour in the site is this hue at
+# some alpha, which is what keeps a dense graph from turning into confetti.
+INK = "#171714"
+PALETTE = """--paper:#fff;--ink:#171714;--panel:#fcfcfb;
+--line:#17171426;--line2:#17171433;--rule:#1717144d;
+--mut:#171714a8;--mut2:#17171473;--accent:#a33a1c;
+--est:#178a5e;--open:#c08a00;--dead:#c43c2e;--goal:#4f46e5;--edge:#17171459"""
 SITE_CSS = """
-body{font:15px/1.55 SANS;max-width:60em;margin:2em auto;padding:0 1em;color:#1c1e1c}
-a{color:#4f46e5;text-decoration:none}a:hover{text-decoration:underline}
-code,pre{font:13px/1.45 Menlo,monospace;background:#f4f4f2}
-pre{padding:.8em;overflow-x:auto;border:1px solid #e5e7e3}
-.badge{display:inline-block;padding:.1em .55em;border-radius:.8em;color:#fff;font:700 11px SANS;letter-spacing:.04em}
-.node{font:13px Menlo,monospace}
-h1{font-size:1.4em}h2{font-size:1.05em;border-bottom:1px solid #e5e7e3;padding-bottom:.2em}
-ul.rel{list-style:none;padding-left:0}ul.rel li{margin:.25em 0}
-.muted{color:#8b9089}.tree{white-space:pre;font:13px/1.5 Menlo,monospace;background:#fafaf8;border:1px solid #e5e7e3;padding:1em;overflow-x:auto}
-table{border-collapse:collapse}td,th{border:1px solid #e5e7e3;padding:.25em .6em;font-size:.9em}
-""".replace("SANS", SANS)
-MATHJAX = ('<script>MathJax={tex:{inlineMath:[["$","$"],["\\\\(","\\\\)"]]}};</script>'
-           '<script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>')
+:root{PALETTE;color-scheme:light}
+html{background:var(--paper)}
+body{font:15px/1.6 SANS;max-width:52em;margin:0 auto;padding:2.6em 1.4em 6em;
+color:var(--ink);background:var(--paper);font-synthesis:none;
+text-rendering:geometricPrecision;-webkit-font-smoothing:antialiased}
+a{color:var(--ink);text-decoration:none;border-bottom:1px solid var(--rule)}
+a:hover{color:var(--accent);border-bottom-color:var(--accent)}
+code,pre{font:12.5px/1.5 MONO;background:var(--panel)}
+code{border:1px solid var(--line);padding:.05em .3em}
+pre{padding:.9em 1.1em;overflow-x:auto;border:1px solid var(--line)}
+pre code{border:0;padding:0;background:none}
+.badge{display:inline-block;padding:.15em .6em;color:#fff;font:700 10px SANS;
+letter-spacing:.08em}
+.node{font:12.5px MONO}
+h1{font-size:clamp(1.7rem,3.4vw,2.5rem);font-weight:500;letter-spacing:-.035em;
+line-height:1.06;margin:0 0 .5em;max-width:22ch}
+h1 .node{display:block;font-size:.5em;letter-spacing:0;color:var(--mut);
+margin-bottom:.5em}
+h2{font-size:.72rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+color:var(--mut2);margin:2.6em 0 .6em;padding-bottom:.4em;
+border-bottom:1px solid var(--line)}
+h3,h4{font-size:1rem;font-weight:700;letter-spacing:-.01em;margin:1.8em 0 .4em}
+p{max-width:78ch;text-wrap:pretty}
+ul.rel{list-style:none;padding-left:0}ul.rel li{margin:.45em 0;max-width:78ch}
+.muted{color:var(--mut)}
+.tree{white-space:pre;font:12.5px/1.55 MONO;background:var(--panel);
+border:1px solid var(--line);padding:1.1em;overflow-x:auto}
+table{border-collapse:collapse;width:100%}
+td,th{border-bottom:1px solid var(--line);padding:.45em .7em;font-size:.88em;
+text-align:left}
+th{font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--mut2)}
+tr:hover td{background:var(--panel)}
+nav.top{display:flex;gap:1.4em;align-items:baseline;margin-bottom:3em;
+font-size:.72rem;letter-spacing:.14em;text-transform:uppercase}
+nav.top a{border:0;color:var(--mut2)}nav.top a:hover{color:var(--accent)}
+.art{font:12.5px MONO;word-break:break-all}
+.katex{font-size:1.03em}
+.katex-display{overflow-x:auto;overflow-y:hidden;padding:.25em 0;margin:.6em 0}
+.mathblock{overflow-x:auto;margin:1.2em 0}
+""".replace("SANS", SANS).replace("MONO", MONO).replace("PALETTE", PALETTE)
+# Typeset on demand: `cairnTypeset(el)` is safe to call before KaTeX has
+# loaded (it re-runs on the script's load event) and never throws on a bad
+# expression -- a malformed formula in one node must not blank the page.
+KATEX_OPTS_JS = """
+window.KATEX_DELIMS=[{left:"$$",right:"$$",display:true},
+ {left:"\\\\[",right:"\\\\]",display:true},
+ {left:"\\\\(",right:"\\\\)",display:false},
+ {left:"$",right:"$",display:false}];
+window.cairnTypeset=function(el){
+ if(!el||typeof renderMathInElement!=='function')return;
+ try{renderMathInElement(el,{delimiters:window.KATEX_DELIMS,throwOnError:false,
+  ignoredTags:["script","noscript","style","textarea","pre","code","option"],
+  errorColor:"#a33a1c"});}catch(e){}
+};
+window.addEventListener('DOMContentLoaded',function(){
+ var go=function(){cairnTypeset(document.body)};
+ if(typeof renderMathInElement==='function')go();else window.addEventListener('load',go);
+});
+"""
+# Search is over ids, titles and rendered statements at once, ranked so that
+# an exact id beats a prefix beats a title hit beats a body hit -- typing a
+# slug goes straight there, typing a phrase finds the node that argues it.
+SEARCH_JS = r"""
+(function(){
+var $=function(i){return document.getElementById(i)};
+var pal=$('pal'),q=$('palq'),hits=$('palhits'),scrim=$('scrim'),cnt=$('palcount');
+var CORPUS=null,rows=[],cur=0;
+function plain(h){var d=document.createElement('div');d.innerHTML=h||'';
+ return (d.textContent||'').replace(/\s+/g,' ').trim()}
+function corpus(){
+ if(CORPUS)return CORPUS;
+ CORPUS=[];
+ for(var i=0;i<DATA.claims.length;i++){var c=DATA.claims[i];
+  CORPUS.push({id:c.id,kind:'claim',status:c.status,goal:c.goal,
+   title:c.title,text:plain(c.html)})}
+ var R=DATA.routes||{};
+ for(var k in R)CORPUS.push({id:k,kind:'route',status:R[k].dead?'INVALIDATED':'',
+   title:R[k].title||k,text:plain(R[k].html)});
+ return CORPUS;
+}
+function score(o,ql,ws){
+ var id=o.id.toLowerCase(),ti=o.title.toLowerCase(),s=0,i;
+ if(id===ql)return 1000;
+ if(id.indexOf(ql)===0)s=Math.max(s,600);
+ else if((i=id.indexOf(ql))>=0)s=Math.max(s,420-i);
+ if(ti.indexOf(ql)===0)s=Math.max(s,500);
+ else if((i=ti.indexOf(ql))>=0)s=Math.max(s,360-Math.min(i,120));
+ if(ws.length>1){
+  var all=true;for(i=0;i<ws.length;i++)if(ti.indexOf(ws[i])<0){all=false;break}
+  if(all)s=Math.max(s,300);
+ }
+ if(!s){var j=o.text.toLowerCase().indexOf(ql);
+  if(j>=0)s=150-Math.min(j/60,60);
+  else if(ws.length>1){var a2=true;
+   for(i=0;i<ws.length;i++)if(o.text.toLowerCase().indexOf(ws[i])<0){a2=false;break}
+   if(a2)s=80}}
+ if(s){if(o.goal)s+=45;if(o.kind==='claim')s+=12}
+ return s;
+}
+function mark(str,ql){
+ var out=esc(str),i=str.toLowerCase().indexOf(ql);
+ if(i<0||!ql)return out;
+ return esc(str.slice(0,i))+'<mark>'+esc(str.slice(i,i+ql.length))+'</mark>'
+  +esc(str.slice(i+ql.length));
+}
+function snippet(o,ql){
+ if(!o.text)return '';
+ var i=o.text.toLowerCase().indexOf(ql);
+ if(i<0)return '';
+ var a=Math.max(0,i-60),b=Math.min(o.text.length,i+ql.length+90);
+ return (a?'…':'')+mark(o.text.slice(a,b),ql)+(b<o.text.length?'…':'');
+}
+function render(){
+ var ql=q.value.trim().toLowerCase();
+ rows=[];
+ if(ql){
+  var ws=ql.split(/\s+/).filter(Boolean),C=corpus(),scored=[];
+  for(var i=0;i<C.length;i++){var s=score(C[i],ql,ws);if(s>0)scored.push([s,C[i]])}
+  scored.sort(function(a,b){return b[0]-a[0]||a[1].id.localeCompare(b[1].id)});
+  rows=scored.slice(0,40).map(function(p){return p[1]});
+ }
+ cur=0;
+ if(!ql){hits.innerHTML='';cnt.textContent='';return}
+ if(!rows.length){
+  hits.innerHTML='<li class="sel"><span class="ttl">No match for &ldquo;'
+   +esc(q.value.trim())+'&rdquo;</span></li>';cnt.textContent='0 results';return}
+ hits.innerHTML=rows.map(function(o,i){
+  var chip=o.kind==='route'
+   ?'<span class="chip route">'+(o.status==='INVALIDATED'?'failed':'route')+'</span>'
+   :'<span class="chip '+o.status+'">'+o.status+'</span>';
+  var sn=snippet(o,ql);
+  return '<li class="'+(i===cur?'sel':'')+'" data-i="'+i+'">'+chip
+   +'<span class="ttl">'+mark(o.title,ql)+'<span class="sub">'+mark(o.id,ql)
+   +'</span>'+(sn?'<span class="snip">'+sn+'</span>':'')+'</span></li>'}).join('');
+ cnt.textContent=rows.length+(rows.length===40?'+ results':' results');
+ Array.prototype.forEach.call(hits.children,function(li){
+  li.onmouseenter=function(){sel(+li.dataset.i)};
+  li.onclick=function(){go(+li.dataset.i)}});
+}
+function sel(i){
+ if(!rows.length)return;
+ cur=(i+rows.length)%rows.length;
+ Array.prototype.forEach.call(hits.children,function(li,j){
+  li.classList.toggle('sel',j===cur)});
+ var el=hits.children[cur];if(el&&el.scrollIntoView)el.scrollIntoView({block:'nearest'});
+}
+function go(i){
+ if(!rows.length)return;
+ var o=rows[i===undefined?cur:i];
+ close();
+ if(typeof d3==='undefined'){location.href=o.id+'.html';return}
+ selectById(o.id);
+ if(window.focusNode&&window.__byId&&window.__byId[o.id])
+  focusNode(window.__byId[o.id]);
+}
+function open_(){pal.classList.add('on');scrim.classList.add('on');
+ q.value='';render();setTimeout(function(){q.focus()},20)}
+function close(){pal.classList.remove('on');scrim.classList.remove('on');q.blur()}
+$('openSearch').onclick=open_;
+scrim.onclick=close;
+q.addEventListener('input',render);
+q.addEventListener('keydown',function(e){
+ if(e.key==='ArrowDown'){e.preventDefault();sel(cur+1)}
+ else if(e.key==='ArrowUp'){e.preventDefault();sel(cur-1)}
+ else if(e.key==='Enter'){e.preventDefault();go()}
+ else if(e.key==='Escape'){e.preventDefault();close()}});
+document.addEventListener('keydown',function(e){
+ var t=e.target,tag=t&&t.tagName;
+ if(tag==='INPUT'||tag==='TEXTAREA')return;
+ if(e.key==='/'||((e.metaKey||e.ctrlKey)&&e.key==='k')){e.preventDefault();open_()}
+ else if(e.key==='Escape')close()});
+if(location.hash==='#search')open_();
+})();
+"""
+# KaTeX renders to real glyphs and boxes rather than to a font-substituted
+# approximation, and it is fast enough to typeset a panel on every click.
+KATEX = (
+    '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/'
+    'dist/katex.min.css" crossorigin="anonymous">'
+    '<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/'
+    'katex.min.js" crossorigin="anonymous"></script>'
+    '<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/'
+    'contrib/auto-render.min.js" crossorigin="anonymous"></script>'
+    '<script>' + KATEX_OPTS_JS + '</script>')
 
 
 def md_to_html(md):
     out, in_code, in_list, para = [], False, False, []
+    fence = [False]  # is the open fence a math fence?
 
     def inline(s):
         s = html.escape(s, quote=False)
@@ -1180,7 +1359,13 @@ def md_to_html(md):
         if line.strip().startswith("```"):
             flush_para()
             flush_list()
-            out.append("<pre>" if not in_code else "</pre>")
+            if not in_code:
+                # ```math fences become display TeX; every other fence is code
+                fence[0] = line.strip()[3:].strip().lower() in ("math", "latex", "tex")
+                out.append('<div class="mathblock">$$' if fence[0] else "<pre>")
+            else:
+                out.append("$$</div>" if fence[0] else "</pre>")
+                fence[0] = False
             in_code = not in_code
             continue
         if in_code:
@@ -1208,7 +1393,7 @@ def md_to_html(md):
     flush_para()
     flush_list()
     if in_code:
-        out.append("</pre>")
+        out.append("$$</div>" if fence[0] else "</pre>")
     return "\n".join(out)
 
 
@@ -1225,89 +1410,159 @@ def node_link(graph, nid):
 
 
 def page(title, body_html):
-    return (f"<!doctype html><meta charset='utf-8'><title>{html.escape(title)}</title>"
-            f"<style>{SITE_CSS}</style>{MATHJAX}<body>{body_html}</body>")
+    nav = ('<nav class="top"><a href="index.html">graph</a>'
+           '<a href="nodes.html">all nodes</a>'
+           '<a href="index.html#search">search</a></nav>')
+    return ("<!doctype html><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            f"<title>{html.escape(title)}</title>"
+            f"<style>{SITE_CSS}</style>{KATEX}<body>{nav}{body_html}</body>")
 
 
 INDEX_TMPL = """<!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Cairn</title>
-<script>MathJax={tex:{inlineMath:[["$","$"]]}};</script>
-<script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+__KATEX__
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <style>
-:root{--bg:#fafaf9;--ink:#1c1e1c;--mut:#8b9089;--line:#e5e7e3;
---est:#178a5e;--open:#c08a00;--dead:#c43c2e;--goal:#4f46e5;--edge:#9aa096}
+:root{__PALETTE__;color-scheme:light}
 html,body{height:100%;margin:0}
-body{background:var(--bg);color:var(--ink);
-font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-header{display:flex;align-items:center;gap:1.1em;padding:.55em 1.1em;
-border-bottom:1px solid var(--line);background:#fff}
-.wordmark{font-size:12px;font-weight:700;letter-spacing:.3em}
-.stats{color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums}
-header label{margin-left:auto;color:var(--mut);font-size:12px;cursor:pointer;
-user-select:none}
-header button{border:1px solid var(--line);background:#fff;color:var(--ink);
-font:inherit;font-size:12px;padding:.25em .9em;border-radius:2em;cursor:pointer}
-header button:hover{border-color:var(--mut)}
-header a{color:var(--mut);text-decoration:none;font-size:12px}
-header a:hover{color:var(--ink)}
-main{position:relative;height:calc(100% - 42px);overflow:hidden}
-#view{display:block;width:100%;height:100%;cursor:grab}
-aside{position:absolute;top:0;right:0;bottom:0;width:340px;background:#fff;
-border-left:1px solid var(--line);padding:1em 1.2em 2em;overflow-y:auto;
-box-sizing:border-box;transform:translateX(103%);transition:transform .16s ease;
-box-shadow:-8px 0 20px rgba(0,0,0,.05)}
+body{background:var(--paper);color:var(--ink);font:14px/1.55 __SANS__;
+font-synthesis:none;text-rendering:geometricPrecision;
+-webkit-font-smoothing:antialiased}
+header{display:flex;align-items:center;gap:1.4em;padding:.7em 1.3em;
+border-bottom:1px solid var(--line);background:var(--paper)}
+.wordmark{font-size:11px;font-weight:700;letter-spacing:.34em}
+.stats{color:var(--mut2);font-size:11px;font-variant-numeric:tabular-nums;
+letter-spacing:.02em}
+#openSearch{margin-left:auto;display:flex;align-items:center;gap:.7em;
+border:1px solid var(--line);background:var(--paper);color:var(--mut2);
+font:inherit;font-size:12px;padding:.4em .8em .4em 1em;cursor:pointer;
+min-width:15em;text-align:left}
+#openSearch:hover{border-color:var(--rule);color:var(--ink)}
+#openSearch kbd{margin-left:auto;font:10px __MONO__;color:var(--mut2);
+border:1px solid var(--line);padding:.1em .4em}
+header label{color:var(--mut2);font-size:11px;cursor:pointer;user-select:none;
+letter-spacing:.02em}
+header button.lnk{border:0;background:none;color:var(--mut2);font:inherit;
+font-size:11px;letter-spacing:.14em;text-transform:uppercase;cursor:pointer;
+padding:0}
+header button.lnk:hover{color:var(--accent)}
+header a{color:var(--mut2);text-decoration:none;font-size:11px;
+letter-spacing:.14em;text-transform:uppercase}
+header a:hover{color:var(--accent)}
+main{position:relative;height:calc(100% - 45px);overflow:hidden}
+#view{display:block;width:100%;height:100%;cursor:grab;background:var(--paper)}
+aside{position:absolute;top:0;right:0;bottom:0;width:27em;max-width:92vw;
+background:var(--paper);border-left:1px solid var(--line);
+padding:1.4em 1.6em 3em;overflow-y:auto;box-sizing:border-box;
+transform:translateX(103%);transition:transform .18s ease}
 aside.open{transform:none}
-aside .x{position:absolute;top:.45em;right:.6em;border:0;background:none;
-color:var(--mut);font-size:18px;cursor:pointer;line-height:1}
-aside h2{font-size:15px;font-weight:650;margin:.4em 1.2em .5em 0}
-.chip{display:inline-block;padding:.15em .7em;border-radius:1em;color:#fff;
-font-size:10px;font-weight:700;letter-spacing:.06em}
+aside .x{position:absolute;top:.6em;right:.8em;border:0;background:none;
+color:var(--mut2);font-size:20px;cursor:pointer;line-height:1}
+aside h2{font-size:1.32rem;font-weight:500;letter-spacing:-.025em;
+line-height:1.15;margin:.5em 1.2em .55em 0;max-width:24ch}
+.chip{display:inline-block;padding:.2em .7em;color:#fff;font-size:9.5px;
+font-weight:700;letter-spacing:.1em}
 .chip.ESTABLISHED{background:var(--est)}.chip.OPEN{background:var(--open)}
-.chip.INVALIDATED{background:var(--dead)}.chip.route{background:#9aa096}
+.chip.INVALIDATED{background:var(--dead)}
+.chip.route{background:var(--paper);color:var(--mut);border:1px solid var(--rule)}
 .chip.goal{background:var(--goal)}
-aside code{font:11.5px Menlo,monospace;color:var(--mut)}
-.stmt{font-size:13px;line-height:1.55;background:#fafaf8;
-border:1px solid var(--line);border-radius:4px;padding:.2em .8em;
-max-height:44vh;overflow-y:auto}
-.stmt code{font:11px Menlo,monospace;background:#f0f0ec}
-.stmt pre{font:11px/1.5 Menlo,monospace;background:#f0f0ec;padding:.5em;overflow-x:auto}
-.stmt a{color:var(--goal);text-decoration:none}
-h3.sec{font-size:11px;font-weight:700;letter-spacing:.12em;color:var(--mut);
-text-transform:uppercase;margin:1.2em 0 .2em}
+aside code{font:11.5px __MONO__;color:var(--mut)}
+.stmt{font-size:13px;line-height:1.6;background:var(--panel);
+border:1px solid var(--line);padding:.9em 1.1em;max-height:42vh;overflow-y:auto}
+.stmt code{font:11px __MONO__;background:var(--paper);border:1px solid var(--line);
+padding:.03em .28em}
+.stmt pre{font:11px/1.5 __MONO__;background:var(--paper);
+border:1px solid var(--line);padding:.7em;overflow-x:auto}
+.stmt a{color:var(--ink);border-bottom:1px solid var(--rule);text-decoration:none}
+.stmt a:hover{color:var(--accent);border-bottom-color:var(--accent)}
+.stmt p{margin:.55em 0}
+.stmt .mathblock{overflow-x:auto;margin:.9em 0}
+.stmt .katex{font-size:1em}
+h3.sec{font-size:10px;font-weight:700;letter-spacing:.16em;color:var(--mut2);
+text-transform:uppercase;margin:1.9em 0 .4em}
 .fr{list-style:none;padding:0;margin:.3em 0}
-.fr li{padding:.35em 0;border-bottom:1px solid #f1f2ef;font-size:13px;cursor:pointer}
-.fr li:hover{color:var(--goal)}
-.fr .imp{color:var(--mut);font:11px Menlo,monospace}
+.fr li{padding:.5em 0;border-bottom:1px solid var(--line);font-size:13px;
+cursor:pointer;line-height:1.4}
+.fr li:hover{color:var(--accent)}
+.fr .imp{color:var(--mut2);font:10.5px __MONO__}
 .hint{color:var(--mut);font-size:12px}
-details summary{cursor:pointer;font-size:13px;font-weight:650;margin:1.2em 0 .3em;
-color:var(--mut)}
-svg text{font:10px Menlo,monospace;fill:#60655e;pointer-events:none}
-.lk{stroke:var(--edge);stroke-width:1.6}
-.lk.kill,.lk.dead{stroke:var(--dead);stroke-dasharray:5 3;stroke-width:1.4}
-g.deadbit,line.dead{visibility:hidden}
-.showdead g.deadbit,.showdead line.dead{visibility:visible}
+details summary{cursor:pointer;font-size:10px;font-weight:700;letter-spacing:.16em;
+text-transform:uppercase;margin:1.9em 0 .4em;color:var(--mut2)}
+svg text{font:10px __MONO__;fill:var(--mut);pointer-events:none;
+paint-order:stroke;stroke:var(--paper);stroke-width:3.5px;stroke-linejoin:round}
+svg text.goalcap{fill:var(--goal);stroke-width:4px}
+.lk{stroke:var(--edge);stroke-width:1.3;fill:none}
+.lk.kill,.lk.dead{stroke:var(--dead);stroke-dasharray:5 3;stroke-width:1.2;
+opacity:.75}
+g.deadbit,path.dead{visibility:hidden}
+.showdead g.deadbit,.showdead path.dead{visibility:visible}
 g.orphan{display:none}
-.dim{opacity:.12}
-a.open-page{color:var(--goal);text-decoration:none;font-size:13px}
-#key{position:absolute;left:14px;bottom:12px;display:flex;flex-direction:column;
-gap:.28em;font-size:11px;color:var(--mut);pointer-events:none}
+.dim{opacity:.1}
+g.n,path.lk{transition:opacity .12s}
+text.hidelabel{display:none}
+a.open-page{color:var(--ink);font-size:12.5px;letter-spacing:.02em;
+border-bottom:1px solid var(--rule);text-decoration:none}
+a.open-page:hover{color:var(--accent);border-bottom-color:var(--accent)}
+ul.arts{list-style:none;padding:0;margin:.3em 0}
+ul.arts li{padding:.3em 0;font:11.5px __MONO__;word-break:break-all}
+ul.arts a{color:var(--ink);text-decoration:none;
+border-bottom:1px solid var(--rule)}
+ul.arts a:hover{color:var(--accent);border-bottom-color:var(--accent)}
+#key{position:absolute;left:16px;bottom:14px;display:flex;flex-direction:column;
+gap:.3em;font-size:10.5px;color:var(--mut2);pointer-events:none}
 #key svg{vertical-align:-3px;margin-right:.45em}
+#scrim{position:absolute;inset:0;background:#17171412;opacity:0;
+pointer-events:none;transition:opacity .14s}
+#scrim.on{opacity:1;pointer-events:auto}
+#pal{position:absolute;top:9vh;left:50%;transform:translateX(-50%) scale(.985);
+width:min(46em,92vw);background:var(--paper);border:1px solid var(--ink);
+display:none;flex-direction:column;max-height:74vh;opacity:0;
+transition:opacity .14s,transform .14s}
+#pal.on{display:flex;opacity:1;transform:translateX(-50%) scale(1)}
+#pal input{border:0;border-bottom:1px solid var(--line);background:none;
+font:400 1.35rem/1.2 __SANS__;letter-spacing:-.02em;color:var(--ink);
+padding:.85em 1em;outline:none;width:100%;box-sizing:border-box}
+#pal input::placeholder{color:var(--mut2)}
+#palhits{overflow-y:auto;margin:0;padding:0;list-style:none}
+#palhits li{padding:.7em 1.15em;border-bottom:1px solid var(--line);
+cursor:pointer;display:flex;gap:.9em;align-items:baseline}
+#palhits li:last-child{border-bottom:0}
+#palhits li.sel{background:var(--panel);box-shadow:inset 3px 0 0 var(--accent)}
+#palhits .ttl{font-size:13.5px;line-height:1.35;flex:1;min-width:0}
+#palhits .sub{display:block;color:var(--mut2);font:10.5px __MONO__;
+margin-top:.25em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#palhits mark{background:#a33a1c1f;color:var(--accent);font-weight:700}
+#palhits .snip{display:block;color:var(--mut);font-size:11.5px;margin-top:.3em;
+line-height:1.4}
+#palfoot{border-top:1px solid var(--line);padding:.5em 1.15em;
+color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
+#palfoot b{font-weight:400;color:var(--ink);font-family:__MONO__}
 </style>
 <body>
 <header><span class="wordmark">CAIRN</span><span class="stats">__STATS__</span>
+<button id="openSearch">search the graph<kbd>/</kbd></button>
 <label><input type="checkbox" id="showdead" checked> failed routes</label>
-<button id="frontierbtn">frontier</button>
+<label><input type="checkbox" id="showlabels" checked> labels</label>
+<button class="lnk" id="frontierbtn">frontier</button>
 <a href="nodes.html">all nodes</a></header>
 <main><svg id="view"></svg>
 <div id="key">
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="7.6" fill="none" stroke="#4f46e5" stroke-width="1.8"/><circle cx="9" cy="8" r="4.6" fill="#fff" stroke="#c08a00" stroke-width="2"/></svg>goal</span>
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="6" fill="#178a5e"/></svg>established</span>
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="6" fill="#fff" stroke="#c08a00" stroke-width="2.2"/></svg>open</span>
-<span><svg width="22" height="16"><rect x="4" y="3" width="10" height="10" fill="#9aa096"/></svg>&and; multi-premise route</span>
-<span><svg width="27" height="16"><line x1="1" y1="8" x2="20" y2="8" stroke="#9aa096" stroke-width="1.6"/><path d="M19,4.5L25,8L19,11.5z" fill="#9aa096"/></svg>premises &#10230; target</span>
-<span><svg width="27" height="16"><line x1="1" y1="8" x2="20" y2="8" stroke="#c43c2e" stroke-width="1.4" stroke-dasharray="5,3"/><path d="M19,4.5L25,8L19,11.5z" fill="#c43c2e"/></svg>failed / invalidated</span>
+<span><svg width="22" height="16"><rect x="4" y="3" width="10" height="10" fill="#8b8f86"/></svg>&and; multi-premise route</span>
+<span><svg width="27" height="16"><path d="M1,11 Q13,3 20,7" fill="none" stroke="#17171459" stroke-width="1.3"/><path d="M19,4.5L25,8L19,11.5z" fill="#17171459"/></svg>premises &#10230; target</span>
+<span><svg width="27" height="16"><path d="M1,11 Q13,3 20,7" fill="none" stroke="#c43c2e" stroke-width="1.2" stroke-dasharray="5,3"/><path d="M19,4.5L25,8L19,11.5z" fill="#c43c2e"/></svg>failed / invalidated</span>
+</div>
+<div id="scrim"></div>
+<div id="pal" role="dialog" aria-label="Search the graph">
+<input id="palq" type="text" autocomplete="off" spellcheck="false"
+ placeholder="Search titles, ids and statements&hellip;">
+<ul id="palhits"></ul>
+<div id="palfoot"><span><b>&uarr;&darr;</b> move</span><span><b>&crarr;</b> open</span>
+<span><b>esc</b> close</span><span id="palcount"></span></div>
 </div>
 <aside id="panel"><button class="x" id="closepanel">&times;</button><div id="panelbody"></div></aside></main>
 <script>
@@ -1337,6 +1592,7 @@ function frontierHome(){
  h+='</ul></details>';
  pbody.innerHTML=h;
  pbody.querySelectorAll('li').forEach(li=>li.onclick=()=>selectById(li.dataset.id));
+ if(window.cairnTypeset)cairnTypeset(pbody);
  openPanel();
 }
 document.getElementById('frontierbtn').onclick=frontierHome;
@@ -1347,6 +1603,7 @@ if(typeof d3==='undefined'){
 }else{
 const nodes=[],links=[],byId={};
 for(const c of DATA.claims){c.type='claim';nodes.push(c);byId[c.id]=c}
+window.__byId=byId;
 for(const l of DATA.links)links.push({source:l.source,target:l.target,kind:'arrow',route:l.route,dead:l.dead});
 for(const j of DATA.junctions){
  const jn={id:'j:'+j.route,type:'junction',route:j.route,rtitle:j.title,
@@ -1377,22 +1634,36 @@ const real=l=>l.kind!=='aff';
 const svg=d3.select('#view'),W=svg.node().clientWidth,H=svg.node().clientHeight;
 const bandY=d=>70+(H-150)*(d.depth/(maxD+2));
 nodes.forEach(n=>{n.y=bandY(n);n.x=W/2+(Math.random()-.5)*W*.7});
-svg.append('defs').html('<marker id="m" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#7c8377"/></marker><marker id="mr" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#c0392b"/></marker>');
+svg.append('defs').html('<marker id="m" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#17171459"/></marker><marker id="mr" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#c43c2e"/></marker>');
 const g=svg.append('g');
-svg.call(d3.zoom().scaleExtent([.25,3]).on('zoom',e=>g.attr('transform',e.transform)))
-   .on('dblclick.zoom',null);
+const zoom=d3.zoom().scaleExtent([.2,3.5])
+ .on('zoom',e=>{g.attr('transform',e.transform)});
+svg.call(zoom).on('dblclick.zoom',null);
+// More room between premises and target than the old layout: the labels are
+// the thing that collides, not the discs, so the spacing is set by text.
 const linkForce=d3.forceLink(links).id(d=>d.id)
- .distance(l=>l.kind==='aff'?150:(l.kind==='in'?60:115))
- .strength(l=>l.kind==='aff'?.03+.1*l.w:.55);
+ .distance(l=>l.kind==='aff'?180:(l.kind==='in'?76:150))
+ .strength(l=>l.kind==='aff'?.03+.1*l.w:.5);
 const sim=d3.forceSimulation(nodes)
  .force('link',linkForce)
- .force('charge',d3.forceManyBody().strength(-430))
- .force('x',d3.forceX(W/2).strength(.04))
+ .force('charge',d3.forceManyBody().strength(-560))
+ .force('x',d3.forceX(W/2).strength(.035))
  .force('y',d3.forceY(bandY).strength(.5))
- .force('collide',d3.forceCollide(d=>d.type==='claim'?(d.goal?48:38):13));
-const line=g.selectAll('line').data(links.filter(real)).join('line')
+ .force('collide',d3.forceCollide(d=>d.type==='claim'?(d.goal?62:50):16));
+// Curved edges: two arrows between the same band no longer lie on top of
+// each other, and a bundle reads as separate strands instead of one smear.
+const arc=l=>{
+ const x1=l.source.x,y1=l.source.y,x2=l.target.x,y2=l.target.y;
+ const dx=x2-x1,dy=y2-y1,h=Math.hypot(dx,dy)||1;
+ const b=Math.min(h*0.13,26);
+ return `M${x1},${y1} Q${(x1+x2)/2-dy/h*b},${(y1+y2)/2+dx/h*b} ${x2},${y2}`;
+};
+const line=g.selectAll('path.lk').data(links.filter(real)).join('path')
  .attr('class',l=>'lk'+(l.kind==='kill'?' kill':'')+(l.dead?' dead':''))
- .attr('marker-end',l=>l.kind==='in'?null:(l.dead||l.kind==='kill'?'url(#mr)':'url(#m)'));
+ .attr('marker-end',l=>l.kind==='in'?null:(l.dead||l.kind==='kill'?'url(#mr)':'url(#m)'))
+ .style('cursor',l=>l.route?'pointer':null)
+ .on('click',(e,l)=>{if(l.route){e.stopPropagation();showRoute(l.route)}});
+line.filter(l=>l.route).append('title').text(l=>l.title||l.route);
 const node=g.selectAll('g.n').data(nodes).join('g')
  .attr('class',d=>'n'+(d.dead?' deadbit':''))
  .style('cursor','pointer')
@@ -1420,6 +1691,12 @@ node.filter(d=>d.type==='junction').append('text')
 node.filter(d=>d.type==='stub').append('circle')
  .attr('r',6.5).attr('fill','#fff').attr('stroke','var(--dead)')
  .attr('stroke-width',1.7).attr('stroke-dasharray','3 2');
+// Labels are the real estate that runs out first, so they are placed by
+// priority and any that would collide with one already placed is dropped:
+// the graph stays readable at every zoom instead of turning into a hedge.
+const LBL=[];
+const prio=d=>(d.goal?1e6:0)+(d.frontier?1e4:0)+(d.impact||0)*10
+ +(d.status==='ESTABLISHED'?1:0);
 node.filter(d=>d.type==='claim').each(function(d){
  let l1='',l2='';
  for(const w of d.title.split(' ')){
@@ -1430,7 +1707,28 @@ node.filter(d=>d.type==='claim').each(function(d){
  const txt=d3.select(this).append('text').attr('text-anchor','middle');
  txt.append('tspan').attr('x',0).attr('dy',d.goal?36:27).text(l1);
  if(l2)txt.append('tspan').attr('x',0).attr('dy',11).text(l2);
+ LBL.push({d:d,el:txt.node(),w:Math.max(l1.length,l2.length)*5.9+8,
+  h:l2?25:14,top:d.goal?28:19});
 });
+LBL.sort((a,b)=>prio(b.d)-prio(a.d));
+let SHOWLBL=true,pinned=null;
+function relabel(){
+ const sd=document.getElementById('showdead').checked;
+ if(!SHOWLBL){for(const o of LBL)o.el.classList.add('hidelabel');return}
+ const kept=[];
+ for(const o of LBL){
+  const d=o.d;
+  if(d.orphan||(d.dead&&!sd)){o.el.classList.add('hidelabel');continue}
+  const x=d.x-o.w/2,y=d.y+o.top,b=[x,y,x+o.w,y+o.h];
+  let hit=false;
+  for(let i=0;i<kept.length;i++){const k=kept[i];
+   if(b[0]<k[2]&&k[0]<b[2]&&b[1]<k[3]&&k[1]<b[3]){hit=true;break}}
+  if(hit&&d!==pinned)o.el.classList.add('hidelabel');
+  else{o.el.classList.remove('hidelabel');kept.push(b)}
+ }
+}
+document.getElementById('showlabels').onchange=function(){
+ SHOWLBL=this.checked;relabel()};
 node.append('title').text(d=>d.type==='claim'?`${d.id} [${d.status}]`:(d.rtitle||d.route));
 function neighbors(d){
  const keep=new Set([d.id]);
@@ -1439,24 +1737,51 @@ function neighbors(d){
  node.classed('dim',n=>!keep.has(n.id));
  line.classed('dim',l=>l.source.id!==d.id&&l.target.id!==d.id);
 }
-node.on('mouseenter',(e,d)=>neighbors(d))
- .on('mouseleave',()=>{node.classed('dim',false);line.classed('dim',false)});
+node.on('mouseenter',(e,d)=>{neighbors(d);pinned=d;relabel()})
+ .on('mouseleave',()=>{node.classed('dim',false);line.classed('dim',false);
+  pinned=null;relabel()});
+// Every id in a panel is a link into the graph, and every artifact is a link
+// out to the file it names -- nothing in the panel is a dead end.
+const idlink=id=>byId[id]
+ ?`<a href="#" data-goto="${esc(id)}">${esc(id)}</a>`
+ :`<a href="${esc(id)}.html">${esc(id)}</a>`;
+const artlist=arts=>!arts||!arts.length?''
+ :'<h3 class="sec">Artifacts</h3><ul class="arts">'+arts.map(a=>
+   a[1]?`<li><a href="${esc(a[1])}" target="_blank" rel="noopener">${esc(a[0])}</a></li>`
+       :`<li>${esc(a[0])}</li>`).join('')+'</ul>';
+function showRoute(rid){
+ const r=(DATA.routes||{})[rid];
+ if(!r){location.href=rid+'.html';return}
+ const imp=(r.requires&&r.requires.length
+   ?r.requires.map(idlink).join(' \\u2227 '):'\\u22a4')+' \\u27f9 '+idlink(r.target);
+ pbody.innerHTML=`<span class="chip route">route${r.dead?' &middot; failed':''}</span>
+  <h2>${esc(r.title||rid)}</h2><code>${esc(rid)}</code>
+  <h3 class="sec">Implication</h3><p style="font-size:12.5px">${imp}</p>
+  ${r.killers&&r.killers.length?`<p class="hint">invalidated by `+
+    r.killers.map(idlink).join(', ')+`</p>`:''}
+  ${r.html?`<div class="stmt">${r.html}</div>`:''}
+  ${artlist(r.arts)}
+  <p><a class="open-page" href="${esc(rid)}.html">open page &#8594;</a></p>`;
+ afterPanel();
+}
+function afterPanel(){
+ pbody.querySelectorAll('a[data-goto]').forEach(a=>a.onclick=e=>{
+  e.preventDefault();selectById(a.dataset.goto)});
+ openPanel();
+ if(window.cairnTypeset)cairnTypeset(pbody);
+}
 function show(d){
  if(d.type==='claim'){
   pbody.innerHTML=`${d.goal?'<span class="chip goal">GOAL</span> ':''}<span class="chip ${d.status}">${d.status}</span>
    <h2>${esc(d.title)}</h2><code>${d.id}</code>
    ${d.lock?`<p class="hint">claimed (${esc(d.lock)})</p>`:''}
    <div class="stmt">${d.html||'(no statement)'}</div>
+   ${artlist(d.arts)}
    <p><a class="open-page" href="${d.id}.html">open page &#8594;</a></p>`;
+  afterPanel();
  }else{
-  const imp=(d.requires&&d.requires.length?d.requires.join(' \\u2227 '):'\\u22a4')+' \\u27f9 '+d.tgt;
-  pbody.innerHTML=`<span class="chip route">route${d.dead?' &middot; failed':''}</span>
-   <h2>${esc(d.rtitle||d.route)}</h2><code>${esc(imp)}</code>
-   ${d.killers&&d.killers.length?`<p class="hint">invalidated by ${d.killers.join(', ')}</p>`:''}
-   <p><a class="open-page" href="${d.route}.html">open page &#8594;</a></p>`;
+  showRoute(d.route);
  }
- openPanel();
- if(window.MathJax&&MathJax.typesetPromise)MathJax.typesetPromise([pbody]);
 }
 selectById=id=>{const d=byId[id];if(d){show(d);if(!d.orphan){neighbors(d);
  setTimeout(()=>{node.classed('dim',false);line.classed('dim',false)},1600)}}};
@@ -1471,19 +1796,29 @@ function refreshVis(){
  nodes.forEach(d=>{d.orphan=d.type==='claim'&&!d.root&&!d.goal&&!d.frontier&&!(deg[d.id]>0)});
  node.classed('orphan',d=>d.orphan);
  g.classed('showdead',sd);
- sim.force('charge',d3.forceManyBody().strength(d=>d.orphan?-10:-430));
+ sim.force('charge',d3.forceManyBody().strength(d=>d.orphan?-10:-560));
  linkForce.strength(l=>l.kind==='aff'
-  ?((l.source.orphan||l.target.orphan)?0:.03+.1*l.w):.55);
+  ?((l.source.orphan||l.target.orphan)?0:.03+.1*l.w):.5);
  sim.alpha(.5).restart();
+ relabel();
 }
 document.getElementById('showdead').onchange=refreshVis;
+let tk=0;
 sim.on('tick',()=>{
- line.attr('x1',l=>l.source.x).attr('y1',l=>l.source.y)
-     .attr('x2',l=>l.target.x).attr('y2',l=>l.target.y);
+ line.attr('d',arc);
  node.attr('transform',d=>`translate(${d.x},${d.y})`);
+ if((++tk%7)===0)relabel();
 });
+sim.on('end',relabel);
+// Centre on a node without losing the reader's zoom level.
+window.focusNode=function(d){
+ const t=d3.zoomTransform(svg.node());
+ svg.transition().duration(420).call(zoom.transform,
+  d3.zoomIdentity.translate(W/2-d.x*t.k,H/2-d.y*t.k).scale(t.k));
+};
 refreshVis();
 }
+__SEARCH_JS__
 </script>
 """
 
@@ -1492,16 +1827,21 @@ def autolink(html_str, ids):
     """Hyperlink every mention of a known node id in already-rendered HTML."""
     pat = re.compile(r"[a-z0-9][a-z0-9-]{1,63}")
     parts = re.split(r"(<[^>]+>)", html_str)
-    out, in_a = [], 0
+    out, in_a, in_math = [], 0, False
     for part in parts:
         if part.startswith("<"):
             if part.startswith("<a"):
                 in_a += 1
             elif part.startswith("</a"):
                 in_a = max(0, in_a - 1)
+            elif 'class="mathblock"' in part:
+                in_math = True
+            elif part.startswith("</div") and in_math:
+                in_math = False
             out.append(part)
             continue
-        if in_a:
+        # an anchor inside a formula would split the text node KaTeX needs
+        if in_a or in_math:
             out.append(part)
             continue
         out.append(pat.sub(
@@ -1530,13 +1870,57 @@ def goal_depths(graph):
     return depth
 
 
+def _web_root():
+    """`https://host/owner/repo` for the origin remote, or None.
+
+    Artifacts name files in the repository, so on a published site they should
+    be one click from the node that cites them.  Derived from the remote rather
+    than configured, so it is right by default and absent when there is no
+    remote to be right about."""
+    r = _git("remote", "get-url", "origin")
+    if r.returncode != 0:
+        return None
+    url = r.stdout.strip()
+    m = re.match(r"^(?:git@|ssh://git@)([^:/]+)[:/](.+?)(?:\.git)?$", url)
+    if not m:
+        m = re.match(r"^https?://(?:[^@/]+@)?([^/]+)/(.+?)(?:\.git)?$", url)
+    if not m:
+        return None
+    return f"https://{m.group(1)}/{m.group(2)}"
+
+
+def _web_ref():
+    r = _git("rev-parse", "--abbrev-ref", "HEAD")
+    ref = r.stdout.strip() if r.returncode == 0 else ""
+    return ref if ref and ref != "HEAD" else "main"
+
+
+def artifact_links(paths, root, ref):
+    """[(label, href|None)] for an `artifacts:` list."""
+    out = []
+    for p in paths:
+        p = str(p)
+        if not root:
+            out.append((p, None))
+            continue
+        if ":" in p and not p.startswith(("http://", "https://")):
+            rev, _, path = p.partition(":")
+            out.append((p, f"{root}/blob/{rev}/{path}"))
+        elif p.startswith(("http://", "https://")):
+            out.append((p, p))
+        else:
+            out.append((p, f"{root}/blob/{ref}/{p}"))
+    return out
+
+
 def generate_site(graph, locks):
     os.makedirs(SITE_DIR, exist_ok=True)
+    web, ref = _web_root(), _web_ref()
     # index = the graph, full viewport
     idset = set(graph.nodes)
     depths = goal_depths(graph)
     data = {"claims": [], "links": [], "junctions": [], "dead": [], "affinity": [],
-            "maxDepth": max(depths.values(), default=0)}
+            "routes": {}, "maxDepth": max(depths.values(), default=0)}
     for cid, c in graph.claims.items():
         data["claims"].append({
             "id": cid, "status": c.status, "root": bool(c.meta.get("root")),
@@ -1545,6 +1929,7 @@ def generate_site(graph, locks):
             "frontier": cid in graph.frontier,
             "depth": depths.get(cid),
             "lock": fmt_remaining(locks[cid]) if cid in locks else None,
+            "arts": artifact_links(c.get_list("artifacts"), web, ref),
             "html": autolink(md_to_html(c.body), idset)})
     for rid, r in graph.routes.items():
         tgt = r.meta.get("target")
@@ -1553,6 +1938,13 @@ def generate_site(graph, locks):
         reqs = [q for q in r.get_list("requires") if q in graph.claims]
         dead = r.status == "INVALIDATED"
         killers = graph.invalidated_by.get(rid, [])
+        # every route is panel-renderable by id, whether it draws as an edge,
+        # a junction or a stub
+        data["routes"][rid] = {
+            "title": r.title, "target": tgt, "requires": reqs, "dead": dead,
+            "killers": killers,
+            "arts": artifact_links(r.get_list("artifacts"), web, ref),
+            "html": autolink(md_to_html(r.body), idset)}
         if not reqs:
             if dead:
                 data["dead"].append({"route": rid, "target": tgt,
@@ -1584,26 +1976,33 @@ def generate_site(graph, locks):
     est = sum(1 for c in graph.claims.values() if c.status == "ESTABLISHED")
     stats = (f"{len(graph.claims)} claims · {est} established · "
              f"{len(graph.routes)} routes · {len(graph.frontier)} frontier holes")
-    idx = (INDEX_TMPL.replace("__DATA__", json.dumps(data).replace("</", "<\\/"))
+    idx = (INDEX_TMPL.replace("__KATEX__", KATEX)
+                     .replace("__PALETTE__", PALETTE)
+                     .replace("__SANS__", SANS).replace("__MONO__", MONO)
+                     .replace("__SEARCH_JS__", SEARCH_JS)
+                     .replace("__DATA__", json.dumps(data).replace("</", "<\\/"))
                      .replace("__STATS__", html.escape(stats)))
     with open(os.path.join(SITE_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(idx)
     # secondary: plain listing
-    B = ["<p><a href='index.html'>&larr; graph</a></p>",
-         "<h1>All nodes</h1><table><tr><th>id</th><th>kind</th><th>status</th><th>title</th></tr>"]
+    B = ["<h1>All nodes</h1>",
+         "<table><tr><th>id</th><th>kind</th><th>status</th><th>title</th></tr>"]
     for nid, n in sorted(graph.nodes.items()):
-        B.append(f"<tr><td><a href='{nid}.html'>{nid}</a></td><td>{n.kind}</td>"
-                 f"<td>{badge(n.status)}</td><td>{html.escape(n.title)}</td></tr>")
+        B.append(f"<tr><td class='art'><a href='{nid}.html'>{nid}</a></td>"
+                 f"<td>{n.kind}</td><td>{badge(n.status)}</td>"
+                 f"<td><a href='{nid}.html'>{html.escape(n.title)}</a></td></tr>")
     B.append("</table>")
     with open(os.path.join(SITE_DIR, "nodes.html"), "w", encoding="utf-8") as f:
         f.write(page("Cairn — all nodes", "\n".join(B)))
     for nid, n in graph.nodes.items():
         goalmark = (f'<span class="badge" style="background:{GOAL_COLOR}">GOAL</span> '
                     if n.meta.get("goal") else "")
-        B = ["<p><a href='index.html'>← index</a></p>",
-             f"<h1><span class='node'>{nid}</span> {html.escape(n.title)}</h1>",
+        src = html.escape(n.relpath)
+        srclink = (f"<a href='{web}/blob/{ref}/{src}' target='_blank' "
+                   f"rel='noopener'>{src}</a>" if web else src)
+        B = [f"<h1><span class='node'>{nid}</span> {html.escape(n.title)}</h1>",
              f"<p>{goalmark}{badge(n.status)} <span class='muted'>{n.kind} · "
-             f"<code>{html.escape(n.relpath)}</code></span></p>"]
+             f"<span class='art'>{srclink}</span></span></p>"]
         if n.status_reasons:
             B.append("<p class='muted'>" + html.escape("; ".join(n.status_reasons)) + "</p>")
         lock = locks.get(nid)
@@ -1631,10 +2030,14 @@ def generate_site(graph, locks):
             rel("Target", [n.meta.get("target")])
             rel("Requires", n.get_list("requires"))
             rel("Invalidated by", graph.invalidated_by.get(nid, []))
-        arts = n.get_list("artifacts")
+        arts = artifact_links(n.get_list("artifacts"), web, ref)
         if arts:
             B.append("<h2>Artifacts</h2><ul class='rel'>")
-            B.extend(f"<li><code>{html.escape(str(a))}</code></li>" for a in arts)
+            for label, href in arts:
+                lab = html.escape(label)
+                B.append(f"<li class='art'><a href='{html.escape(href)}' "
+                         f"target='_blank' rel='noopener'>{lab}</a></li>"
+                         if href else f"<li class='art'>{lab}</li>")
             B.append("</ul>")
         B.append("<h2>Statement</h2>")
         B.append(autolink(md_to_html(n.body), set(graph.nodes))
