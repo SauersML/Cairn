@@ -79,6 +79,9 @@ ROOT DISCOVERY: the project root is $CAIRN_ROOT if set, else the nearest
 ancestor of the working directory containing a research/ directory, else
 the working directory itself.
 
+SITE TITLE: the generated site is titled $CAIRN_SITE_TITLE if set, else
+after the tool.  Set it to the name of the project the graph is about.
+
 No third-party dependencies. Python 3.9+.
 """
 
@@ -1133,6 +1136,11 @@ def generate_frontier_md(graph, locks):
 # Static site (human display is downstream of the kernel)
 # ---------------------------------------------------------------------------
 
+# The name the generated site carries: its <title>, and the prefix of the
+# secondary pages.  Consumers set $CAIRN_SITE_TITLE to their own project
+# name; unset, the site is titled after the tool.
+SITE_TITLE = os.environ.get("CAIRN_SITE_TITLE") or "Cairn"
+
 STATUS_COLOR = {"OPEN": "#c08a00", "ESTABLISHED": "#178a5e",
                 "COMPLETE": "#178a5e", "INVALIDATED": "#c43c2e"}
 GOAL_COLOR = "#4f46e5"
@@ -1869,7 +1877,7 @@ def page(title, body_html):
 
 INDEX_TMPL = """<!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Cairn</title>
+<title>__TITLE__</title>
 __KATEX__
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <style>
@@ -2954,7 +2962,8 @@ def generate_site(graph, locks):
                      .replace("__SANS__", SANS).replace("__MONO__", MONO)
                      .replace("__SEARCH_JS__", SEARCH_JS)
                      .replace("__DATA__", json.dumps(data).replace("</", "<\\/"))
-                     .replace("__STATS__", html.escape(stats)))
+                     .replace("__STATS__", html.escape(stats))
+                     .replace("__TITLE__", html.escape(SITE_TITLE)))
     with open(os.path.join(SITE_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(idx)
     # secondary: plain listing
@@ -2966,7 +2975,7 @@ def generate_site(graph, locks):
                  f"<td><a href='{nid}.html'>{html.escape(n.title)}</a></td></tr>")
     B.append("</table>")
     with open(os.path.join(SITE_DIR, "nodes.html"), "w", encoding="utf-8") as f:
-        f.write(page("Cairn — all nodes", "\n".join(B)))
+        f.write(page(f"{SITE_TITLE} — all nodes", "\n".join(B)))
     for nid, n in graph.nodes.items():
         goalmark = (f'<span class="badge" style="background:{GOAL_COLOR}">GOAL</span> '
                     if n.meta.get("goal") else "")
@@ -3743,7 +3752,8 @@ def main():
                epilog="exit codes: 0 ok · 2 policy findings (duplicates, "
                       "unattacked new holes) · 3 already claimed · 4 invalid "
                       "graph · 64 usage · 1 runtime error. Env: CAIRN_ROOT "
-                      "overrides project-root discovery.")
+                      "overrides project-root discovery; CAIRN_SITE_TITLE "
+                      "names the generated site.")
     p.add_argument("--version", action="version", version=f"cairn {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
