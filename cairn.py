@@ -2153,6 +2153,11 @@ node.filter(d=>d.type==='claim').each(function(d){
   h:l2?25:14,top:d.goal?28:19});
 });
 LBL.sort((a,b)=>prio(b.d)-prio(a.d));
+// Soft, not silent: a label is dropped only when it is mostly buried under
+// one already placed, and a goal, root or frontier claim is never dropped --
+// a graph that hides the names of the things it is about is worse than one
+// with some overlap.
+const HIDE_AT=0.5;
 function relabel(){
  const sd=document.getElementById('showdead').checked;
  const kept=[];
@@ -2160,10 +2165,19 @@ function relabel(){
   const d=o.d;
   if(d.orphan||(d.dead&&!sd)){o.el.classList.add('hidelabel');continue}
   const x=d.x-o.w/2,y=d.y+o.top,b=[x,y,x+o.w,y+o.h];
-  let hit=false;
-  for(let i=0;i<kept.length;i++){const k=kept[i];
-   if(b[0]<k[2]&&k[0]<b[2]&&b[1]<k[3]&&k[1]<b[3]){hit=true;break}}
-  if(hit)o.el.classList.add('hidelabel');
+  const area=(b[2]-b[0])*(b[3]-b[1]);
+  let worst=0;
+  for(let i=0;i<kept.length;i++){
+   const k=kept[i];
+   const ox=Math.min(b[2],k[2])-Math.max(b[0],k[0]);
+   const oy=Math.min(b[3],k[3])-Math.max(b[1],k[1]);
+   if(ox>0&&oy>0){
+    const f=(ox*oy)/Math.min(area,(k[2]-k[0])*(k[3]-k[1]));
+    if(f>worst)worst=f;
+   }
+  }
+  if(worst>HIDE_AT&&!(d.goal||d.root||d.frontier))
+   o.el.classList.add('hidelabel');
   else{o.el.classList.remove('hidelabel');kept.push(b)}
  }
 }
