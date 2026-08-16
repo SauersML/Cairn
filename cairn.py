@@ -1880,7 +1880,6 @@ font-synthesis:none;text-rendering:geometricPrecision;
 -webkit-font-smoothing:antialiased}
 header{display:flex;align-items:center;gap:1.4em;padding:.7em 1.3em;
 border-bottom:1px solid var(--line);background:var(--paper)}
-.wordmark{font-size:11px;font-weight:700;letter-spacing:.34em}
 .stats{color:var(--mut2);font-size:11px;font-variant-numeric:tabular-nums;
 letter-spacing:.02em}
 #openSearch{margin-left:auto;display:flex;align-items:center;gap:.7em;
@@ -1941,6 +1940,18 @@ text-transform:uppercase;margin:1.9em 0 .4em}
 cursor:pointer;line-height:1.4}
 .fr li:hover{color:var(--accent)}
 .fr .imp{color:var(--mut2);font:10.5px __MONO__}
+.fr.ctx li{cursor:default;display:flex;gap:.55em;align-items:baseline;flex-wrap:wrap}
+.fr.ctx li:hover{color:inherit}
+.fr.ctx a{color:var(--ink);border-bottom:1px solid var(--rule);text-decoration:none;
+cursor:pointer}
+.fr.ctx a:hover{color:var(--accent);border-bottom-color:var(--accent)}
+.fr.ctx .sub{flex-basis:100%;color:var(--mut2);font-size:11.5px;margin-top:.15em;
+line-height:1.4}
+.mk{flex:none;font-size:9.5px;font-weight:700;letter-spacing:.08em;
+text-transform:uppercase;padding:.15em .5em;border:1px solid var(--line)}
+.mk.ok{color:var(--est);border-color:#178a5e55}
+.mk.open{color:var(--open);border-color:#c08a0055}
+.mk.dead{color:var(--dead);border-color:#c43c2e55}
 .hint{color:var(--mut);font-size:12px}
 details summary{cursor:pointer;font-size:10px;font-weight:700;letter-spacing:.16em;
 text-transform:uppercase;margin:1.9em 0 .4em;color:var(--mut2)}
@@ -1955,8 +1966,10 @@ g.deadbit,line.dead{visibility:hidden}
 g.orphan{display:none}
 .dim{opacity:.13}
 g.n,line.lk{transition:opacity .1s ease}
-text.hidelabel{display:none}
-g.n.hot text{display:block}
+text.orphan{display:none}
+g.labels text{font:10px __MONO__;fill:var(--mut);paint-order:stroke;
+stroke:var(--paper);stroke-width:3.5px;stroke-linejoin:round}
+g.labels text.hot{fill:var(--ink);font-weight:700}
 g.n.hot circle{stroke-width:3}
 line.lk.hot{stroke:var(--ink);stroke-width:1.9}
 line.lk.kill.hot,line.lk.dead.hot{stroke:var(--dead);stroke-width:1.7}
@@ -1999,7 +2012,7 @@ color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
 #palfoot b{font-weight:400;color:var(--ink);font-family:__MONO__}
 </style>
 <body>
-<header><span class="wordmark">CAIRN</span><span class="stats">__STATS__</span>
+<header><span class="stats">__STATS__</span>
 <button id="openSearch">search the graph<kbd>/</kbd></button>
 <label><input type="checkbox" id="showdead" checked> failed routes</label>
 <button class="lnk" id="frontierbtn">frontier</button>
@@ -2091,6 +2104,7 @@ for(const n of nodes)
 for(const n of nodes)if(n.type==='stub')
  for(const k of n.killers||[])if(byId[k]&&byId[k].depth==null)byId[k].depth=n.depth+0.5;
 for(const n of nodes)if(n.depth==null)n.depth=maxD+1;
+const GAP=14;   // breathing room between footprints
 const real=l=>l.kind!=='aff';
 const REAL=links.filter(real);
 const svg=d3.select('#view'),W=svg.node().clientWidth,H=svg.node().clientHeight;
@@ -2106,17 +2120,82 @@ svg.call(zoom).on('dblclick.zoom',null);
 // Do not tighten them to make the graph narrower -- that collapses it into a
 // ball with no structure.  Width is handled after settling, by fitting the
 // view to the graph rather than by squeezing the graph into the view.
+// The layout resolves text collisions by MOVING NODES.  Every node carries
+// its real rectangles -- the disc, and the title at wherever the placement
+// pass currently puts it -- and the force separates disc/disc, disc/title and
+// title/title alike, pushing the nodes themselves apart along the axis of
+// least penetration.  A circular collide cannot see a title at all, which is
+// why text kept colliding however cleverly it was placed.
+function setRects(d){
+ const rad=(d.type==='claim'?(d.goal?23:12):(d.type==='junction'?11:8))+3;
+ const r=[[-rad,-rad,rad,rad]];
+ const L=d.lbl;
+ if(L){
+  const hw=L.w/2+3,t=L.top+L.dy-3;
+  r.push([L.dx-hw,t,L.dx+hw,t+L.h+6]);
+ }
+ d.rects=r;
+ let mx=0,my=0;
+ for(const b of r){mx=Math.max(mx,-b[0],b[2]);my=Math.max(my,-b[1],b[3])}
+ d.mx=mx+GAP;d.my=my+GAP;
+}
+function rectCollide(){
+ let ns=[],MX=0,MY=0;
+ function force(alpha){
+  const q=d3.quadtree(ns,d=>d.x,d=>d.y),k=alpha*0.9;
+  for(const d of ns){
+   q.visit((quad,x0,y0,x1,y1)=>{
+    if(!quad.length){
+     let n=quad;
+     do{
+      const o=n.data;
+      if(o&&o!==d&&o.index>d.index){
+       for(const A of d.rects)for(const B of o.rects){
+        const ax1=d.x+A[0]-GAP/2,ay1=d.y+A[1]-GAP/2;
+        const ax2=d.x+A[2]+GAP/2,ay2=d.y+A[3]+GAP/2;
+        const bx1=o.x+B[0]-GAP/2,by1=o.y+B[1]-GAP/2;
+        const bx2=o.x+B[2]+GAP/2,by2=o.y+B[3]+GAP/2;
+        const ox=Math.min(ax2,bx2)-Math.max(ax1,bx1);
+        if(ox<=0)continue;
+        const oy=Math.min(ay2,by2)-Math.max(ay1,by1);
+        if(oy<=0)continue;
+        if(ox<oy){
+         const s=ox*k*.5*(((bx1+bx2)-(ax1+ax2))<0?-1:1);
+         d.x-=s;o.x+=s;
+        }else{
+         const s=oy*k*.5*(((by1+by2)-(ay1+ay2))<0?-1:1);
+         d.y-=s;o.y+=s;
+        }
+       }
+      }
+      n=n.next;
+     }while(n);
+    }
+    return x0>d.x+d.mx+MX||x1<d.x-d.mx-MX||y0>d.y+d.my+MY||y1<d.y-d.my-MY;
+   });
+  }
+ }
+ force.initialize=n=>{ns=n;MX=MY=0;
+  for(const d of ns){if(!d.rects)setRects(d);
+   MX=Math.max(MX,d.mx);MY=Math.max(MY,d.my)}};
+ return force;
+}
+// links stretch to make room for the titles hanging off their endpoints
+const linkDist=l=>{
+ if(l.kind==='aff')return 190;
+ const room=((l.source.lbl?l.source.lbl.h:0)+(l.target.lbl?l.target.lbl.h:0))*0.55;
+ return (l.kind==='in'?86:150)+room;
+};
 const linkForce=d3.forceLink(links).id(d=>d.id)
- .distance(l=>l.kind==='aff'?150:(l.kind==='in'?60:115))
+ .distance(linkDist)
  .strength(l=>l.kind==='aff'?.03+.1*l.w:.55);
 const sim=d3.forceSimulation(nodes)
  .force('link',linkForce)
- .force('charge',d3.forceManyBody().strength(-430))
+ .force('charge',d3.forceManyBody().strength(-560))
  .force('x',d3.forceX(W/2).strength(.06))
  .force('y',d3.forceY(bandY).strength(.5))
- .force('collide',d3.forceCollide(d=>d.type==='claim'?(d.goal?48:38)
-  :(d.type==='junction'?16:13)))
- .alphaDecay(.035);
+ .force('collide',rectCollide())
+ .alphaDecay(.03);
 const line=g.selectAll('line').data(REAL).join('line')
  .attr('class',l=>'lk'+(l.kind==='kill'?' kill':'')+(l.dead?' dead':''))
  .attr('marker-end',l=>l.kind==='in'?null:(l.dead||l.kind==='kill'?'url(#mr)':'url(#m)'))
@@ -2173,8 +2252,19 @@ const prio=d=>(d.goal?1e6:0)+(d.frontier?1e4:0)+(d.impact||0)*10
 // Wrap to as many lines as the title needs, up to a budget; only titles that
 // genuinely overflow it are elided.  The old two-line cap cut most titles.
 const MAXW=30,MAXL=3;
-node.filter(d=>d.type==='claim').each(function(d){
- const title=(d.title||'').replace(/\\s+/g,' ').trim();
+// Labels live in their own layer, created after the node groups so they draw
+// ON TOP: a title half-covered by a neighbouring disc is unreadable, and DOM
+// order is the only z-order SVG has.
+const labelLayer=g.append('g').attr('class','labels');
+const claimNodes=nodes.filter(d=>d.type==='claim');
+const lab=labelLayer.selectAll('text').data(claimNodes).join('text')
+ .attr('text-anchor','middle')
+ .style('cursor','pointer')
+ .on('click',(e,d)=>{e.stopPropagation();selected=d;highlight(d);show(d)})
+ .on('mouseenter',(e,d)=>{if(!dragging&&!selected)highlight(d)})
+ .on('mouseleave',()=>{if(!dragging&&!selected)highlight(null)});
+lab.each(function(d){
+ const title=(d.title||'').replace(/\s+/g,' ').trim();
  const words=title.split(' ');
  const lines=[];let cur='';
  for(const w of words){
@@ -2188,56 +2278,77 @@ node.filter(d=>d.type==='claim').each(function(d){
  if(!lines.length)lines.push(title.slice(0,MAXW));
  if(lines.join(' ').length<title.length){
   let last=lines[lines.length-1];
-  if(last.length>MAXW-1)last=last.slice(0,MAXW-1).replace(/\\s+\\S*$/,'');
-  lines[lines.length-1]=last+'\\u2026';
+  if(last.length>MAXW-1)last=last.slice(0,MAXW-1).replace(/\s+\S*$/,'');
+  lines[lines.length-1]=last+'\u2026';
  }
- const txt=d3.select(this).append('text').attr('text-anchor','middle');
+ const txt=d3.select(this);
  lines.forEach((ln,i)=>txt.append('tspan').attr('x',0)
   .attr('dy',i?11:(d.goal?36:27)).text(ln));
- LBL.push({d:d,el:txt.node(),
-  w:Math.max.apply(null,lines.map(l=>l.length))*5.9+8,
-  h:lines.length*11+4,top:d.goal?28:19});
+ const rad=d.goal?23:(10+Math.min(d.impact*1.5,4));
+ const w=Math.max.apply(null,lines.map(l=>l.length))*5.9+8;
+ const h=lines.length*11+4,top=d.goal?28:19;
+ // the node's real footprint, disc plus title, is what the layout must keep
+ // apart -- separating circles alone is what let the text collide
+ const rec={d:d,el:this,dx:0,dy:0,rad:rad,w:w,h:h,top:top};
+ d.lbl=rec;LBL.push(rec);
 });
+for(const n of nodes)setRects(n);
+linkForce.distance(linkDist);
+sim.force('collide',rectCollide());
 LBL.sort((a,b)=>prio(b.d)-prio(a.d));
 // Soft, not silent: a label is dropped only when it is mostly buried under
 // one already placed, and a goal, root or frontier claim is never dropped --
 // a graph that hides the names of the things it is about is worse than one
 // with some overlap.
-const HIDE_AT=0.5;
-// Placement is O(labels x placed) and touches the DOM, so it runs on a
-// debounce rather than on the tick, and writes only the labels that changed.
+const LPAD=3;
+// LABELS ARE NEVER HIDDEN.  A node without its name is useless, so placement
+// only ever CHOOSES A POSITION: each label is tried under the node, above it,
+// pushed further out, and offset left/right, and the candidate with the least
+// overlap against the labels already placed and the node discs wins.  Overlap
+// is minimised, never traded for a disappearing title.
 let relabelPending=0;
 function scheduleRelabel(){
  if(relabelPending)return;
  relabelPending=setTimeout(()=>{relabelPending=0;relabel()},260);
 }
-function setHidden(o,v){
- if(o.hidden===v)return;
- o.hidden=v;
- o.el.classList.toggle('hidelabel',v);
+function setPos(o,dx,dy){o.dx=dx;o.dy=dy}
+function ovl(a,b){
+ const x=Math.min(a[2],b[2])-Math.max(a[0],b[0]);
+ if(x<=0)return 0;
+ const y=Math.min(a[3],b[3])-Math.max(a[1],b[1]);
+ return y>0?x*y:0;
 }
 function relabel(){
  const sd=document.getElementById('showdead').checked;
- const kept=[];
+ const placed=[],discs=[];
+ for(const n of nodes){
+  if(n.orphan||(n.dead&&!sd)||!isFinite(n.x))continue;
+  const r=(n.type==='claim'?(n.goal?23:12):9)+2;
+  discs.push([n.x-r,n.y-r,n.x+r,n.y+r]);
+ }
  for(const o of LBL){
   const d=o.d;
-  if(d.orphan||(d.dead&&!sd)){setHidden(o,true);continue}
-  const x=d.x-o.w/2,y=d.y+o.top,b=[x,y,x+o.w,y+o.h];
-  const area=(b[2]-b[0])*(b[3]-b[1]);
-  let worst=0;
-  for(let i=0;i<kept.length;i++){
-   const k=kept[i];
-   const ox=Math.min(b[2],k[2])-Math.max(b[0],k[0]);
-   const oy=Math.min(b[3],k[3])-Math.max(b[1],k[1]);
-   if(ox>0&&oy>0){
-    const f=(ox*oy)/Math.min(area,(k[2]-k[0])*(k[3]-k[1]));
-    if(f>worst)worst=f;
-   }
+  o.el.classList.remove('hidelabel');
+  if(!isFinite(d.x))continue;
+  const w=o.w+LPAD*2,h=o.h+LPAD*2;
+  const x0=d.x-w/2,below=d.y+o.top-LPAD;   // absolute box of the default spot
+  const up=(d.y-o.rad-6-o.h-LPAD)-below;   // flip above the disc
+  const sx=w*0.5;
+  const cands=[[0,0],[0,up],[0,14],[0,up-14],[sx,0],[-sx,0],
+               [sx,up],[-sx,up],[0,28],[0,up-28]];
+  let best=null,bestScore=Infinity;
+  for(const c of cands){
+   const b=[x0+c[0],below+c[1],x0+c[0]+w,below+c[1]+h];
+   let sc=0;
+   for(let i=0;i<placed.length;i++)sc+=ovl(b,placed[i]);
+   for(let i=0;i<discs.length;i++)sc+=ovl(b,discs[i])*1.6;
+   if(sc<bestScore){bestScore=sc;best=[c,b];if(sc===0)break}
   }
-  const hide=worst>HIDE_AT&&!(d.goal||d.root||d.frontier);
-  setHidden(o,hide);
-  if(!hide)kept.push(b);
+  setPos(o,best[0][0],best[0][1]);
+  setRects(d);
+  placed.push(best[1]);
  }
+ placeLabels();
 }
 node.append('title').text(d=>d.type==='claim'?`${d.id} [${d.status}]`:(d.rtitle||d.route));
 // Focus: hover previews, a click sticks, clicking the background clears.
@@ -2269,10 +2380,12 @@ function focusSet(d){
 function highlight(d){
  if(!d){g.classed('focus',false);
   node.classed('dim',false).classed('hot',false);
+  lab.classed('dim',false).classed('hot',false);
   line.classed('dim',false).classed('hot',false);return}
  const {keep,edges}=focusSet(d);
  g.classed('focus',true);
  node.classed('dim',n=>!keep.has(n.id)).classed('hot',n=>n.id===d.id);
+ lab.classed('dim',n=>!keep.has(n.id)).classed('hot',n=>n.id===d.id);
  line.classed('dim',l=>!edges.has(l))
      .classed('hot',l=>{const[a,b]=_ends(l);return a===d.id||b===d.id});
 }
@@ -2298,29 +2411,105 @@ const artlist=arts=>!arts||!arts.length?''
 function showRoute(rid){
  const r=(DATA.routes||{})[rid];
  if(!r){location.href=rid+'.html';return}
- const imp=(r.requires&&r.requires.length
-   ?r.requires.map(idlink).join(' \\u2227 '):'\\u22a4')+' \\u27f9 '+idlink(r.target);
- pbody.innerHTML=`<span class="chip route">route${r.dead?' &middot; failed':''}</span>
-  <h2>${esc(r.title||rid)}</h2><code>${esc(rid)}</code>
-  <h3 class="sec">Implication</h3><p style="font-size:12.5px">${imp}</p>
-  ${r.killers&&r.killers.length?`<p class="hint">invalidated by `+
-    r.killers.map(idlink).join(', ')+`</p>`:''}
-  ${r.html?`<div class="stmt">${r.html}</div>`:''}
-  ${artlist(r.arts)}
-  <p><a class="open-page" href="${esc(rid)}.html">open page &#8594;</a></p>`;
+ const blocked=new Set(r.blocked||[]);
+ let h=`<span class="chip route">route${r.dead?' &middot; failed':''}</span>
+  <h2>${esc(r.title||rid)}</h2><code>${esc(rid)}</code>`;
+ h+=`<h3 class="sec">Would establish</h3><ul class="fr ctx"><li>${clink(r.target)}</li></ul>`;
+ h+='<h3 class="sec">Needs</h3><ul class="fr ctx">';
+ if(!(r.requires||[]).length)
+  h+='<li><span class="mk ok">nothing</span> a complete direct proof</li>';
+ else for(const q of r.requires)
+  h+=`<li>${blocked.has(q)?'<span class="mk open">open</span>':'<span class="mk ok">have it</span>'} ${clink(q)}</li>`;
+ h+='</ul>';
+ if(r.dead&&(r.killers||[]).length){
+  h+='<h3 class="sec">Why it failed</h3><ul class="fr ctx">';
+  for(const k of r.killers)h+=`<li><span class="mk dead">ruled out by</span> ${clink(k)}</li>`;
+  h+='</ul>';
+ }
+ if(r.html)h+='<h3 class="sec">Argument</h3><div class="stmt">'+r.html+'</div>';
+ h+=artlist(r.arts)+`<p><a class="open-page" href="${esc(rid)}.html">open page &#8594;</a></p>`;
+ pbody.innerHTML=h;
  afterPanel();
 }
 function afterPanel(){
  pbody.querySelectorAll('a[data-goto]').forEach(a=>a.onclick=e=>{
   e.preventDefault();selectById(a.dataset.goto)});
+ pbody.querySelectorAll('a[data-route]').forEach(a=>a.onclick=e=>{
+  e.preventDefault();const rid=a.dataset.route;
+  const hub=byId['j:'+rid]||byId['x:'+rid];
+  if(hub){selected=hub;highlight(hub)}
+  showRoute(rid);pbody.scrollTop=0});
  openPanel();
  if(window.cairnTypeset)cairnTypeset(pbody);
+}
+// A node means little alone: what matters is how it was reached, what has
+// been tried against it, what waits on it, and what it would buy.  The panel
+// answers those before it shows the statement.
+const RT=id=>(DATA.routes||{})[id]||{};
+const claimById={};for(const c of DATA.claims)claimById[c.id]=c;
+const rlink=rid=>`<a href="#" data-route="${esc(rid)}">${esc(RT(rid).title||rid)}</a>`;
+const clink=cid=>{const c=claimById[cid];
+ return `<a href="#" data-goto="${esc(cid)}">${esc(c?c.title:cid)}</a>`};
+function routeMark(rid){
+ const r=RT(rid);
+ if(r.dead)return '<span class="mk dead">failed</span>';
+ if(r.status==='COMPLETE')return '<span class="mk ok">proves it</span>';
+ return `<span class="mk open">needs ${(r.blocked||[]).length}</span>`;
+}
+function ctx(d){
+ let h='';
+ const into=d.into||[],needs=d.needs||[],kills=d.kills||[];
+ if(d.status==='ESTABLISHED'&&d.via)
+  h+=`<h3 class="sec">Established by</h3><ul class="fr ctx"><li>${rlink(d.via)}</li></ul>`;
+ const tried=into.filter(r=>r!==d.via);
+ if(tried.length){
+  h+=`<h3 class="sec">${d.status==='ESTABLISHED'?'Other routes':'Routes tried'}</h3><ul class="fr ctx">`;
+  for(const r of tried){
+   const k=RT(r).killers||[],bl=RT(r).blocked||[];
+   h+=`<li>${routeMark(r)} ${rlink(r)}`
+    +(k.length?`<span class="sub">ruled out by ${k.map(clink).join(', ')}</span>`:'')
+    +(bl.length&&!RT(r).dead?`<span class="sub">waiting on ${bl.map(clink).join(', ')}</span>`:'')
+    +'</li>';
+  }
+  h+='</ul>';
+ }
+ if(!into.length&&d.status!=='ESTABLISHED')
+  h+='<h3 class="sec">Routes tried</h3><p class="hint">None — nothing in the graph yet proposes how to get this.</p>';
+ if(needs.length){
+  h+='<h3 class="sec">Needed by</h3><ul class="fr ctx">';
+  for(const r of needs)h+=`<li>${rlink(r)}<span class="sub">to establish ${clink(RT(r).target)}</span></li>`;
+  h+='</ul>';
+ }
+ const g=d.gives;
+ if(g&&(g.claims.length||g.routes.length)){
+  h+='<h3 class="sec">If established</h3><ul class="fr ctx">';
+  for(const c of g.claims.slice(0,10))
+   h+=`<li><span class="mk ok">unlocks</span> ${clink(c)}</li>`;
+  if(g.claims.length>10)h+=`<li class="hint">…and ${g.claims.length-10} more</li>`;
+  for(const r of g.routes.slice(0,6))
+   h+=`<li><span class="mk dead">closes</span> ${rlink(r)}</li>`;
+  h+='</ul>';
+ }
+ if(kills.length){
+  h+='<h3 class="sec">Rules out</h3><ul class="fr ctx">';
+  for(const r of kills)h+=`<li>${rlink(r)}<span class="sub">a route to ${clink(RT(r).target)}</span></li>`;
+  h+='</ul>';
+ }
+ const dis=d.dis||{},dk=Object.keys(dis);
+ if(dk.length){
+  h+='<h3 class="sec">Not to be confused with</h3><ul class="fr ctx">';
+  for(const k of dk)h+=`<li>${clink(k)}<span class="sub">${esc(dis[k])}</span></li>`;
+  h+='</ul>';
+ }
+ return h;
 }
 function show(d){
  if(d.type==='claim'){
   pbody.innerHTML=`${d.goal?'<span class="chip goal">GOAL</span> ':''}<span class="chip ${d.status}">${d.status}</span>
    <h2>${esc(d.title)}</h2><code>${d.id}</code>
    ${d.lock?`<p class="hint">claimed (${esc(d.lock)})</p>`:''}
+   ${ctx(d)}
+   <h3 class="sec">Statement</h3>
    <div class="stmt">${d.html||'(no statement)'}</div>
    ${artlist(d.arts)}
    <p><a class="open-page" href="${d.id}.html">open page &#8594;</a></p>`;
@@ -2329,7 +2518,7 @@ function show(d){
   showRoute(d.route);
  }
 }
-selectById=id=>{const d=byId[id];if(d){selected=d;highlight(d);show(d)}};
+selectById=id=>{const d=byId[id];if(d){selected=d;highlight(d);show(d);pbody.scrollTop=0}};
 node.on('click',(e,d)=>{e.stopPropagation();selected=d;highlight(d);show(d)});
 svg.on('click',()=>{selected=null;highlight(null);closePanel()});
 function refreshVis(){
@@ -2340,18 +2529,25 @@ function refreshVis(){
   deg[a]=(deg[a]||0)+1;deg[b]=(deg[b]||0)+1}});
  nodes.forEach(d=>{d.orphan=d.type==='claim'&&!d.root&&!d.goal&&!d.frontier&&!(deg[d.id]>0)});
  node.classed('orphan',d=>d.orphan);
+ lab.classed('orphan',d=>d.orphan);
  g.classed('showdead',sd);
- sim.force('charge',d3.forceManyBody().strength(d=>d.orphan?-10:-430));
+ sim.force('charge',d3.forceManyBody().strength(d=>d.orphan?-10:-560));
  linkForce.strength(l=>l.kind==='aff'
   ?((l.source.orphan||l.target.orphan)?0:.03+.1*l.w):.5);
  sim.alpha(.5).restart();
  relabel();
 }
 document.getElementById('showdead').onchange=refreshVis;
+function placeLabels(){
+ for(const o of LBL)
+  o.el.setAttribute('transform',
+   'translate('+(o.d.x+o.dx)+','+(o.d.y+o.dy)+')');
+}
 sim.on('tick',()=>{
  line.attr('x1',l=>l.source.x).attr('y1',l=>l.source.y)
      .attr('x2',l=>l.target.x).attr('y2',l=>l.target.y);
  node.attr('transform',d=>`translate(${d.x},${d.y})`);
+ placeLabels();
  scheduleRelabel();
 });
 let fitted=false;
@@ -2568,7 +2764,19 @@ def generate_site(graph, locks):
             "depth": depths.get(cid),
             "lock": fmt_remaining(locks[cid]) if cid in locks else None,
             "arts": artifact_links(c.get_list("artifacts"), web, ref),
+            "via": graph.provenance.get(cid),
+            "into": graph.routes_into.get(cid, []),
+            "needs": graph.required_by.get(cid, []),
+            "kills": [r for r in c.get_list("invalidates") if r in graph.routes],
+            "dis": {k: str(v) for k, v in (c.meta.get("distinct_from") or {}).items()},
             "html": autolink(md_to_html(c.body, idset), idset)})
+    # what an open claim would buy, from the same solver the CLI uses
+    for rec in data["claims"]:
+        if rec["status"] == "ESTABLISHED":
+            continue
+        est1, inv1, _, _ = graph._solve(forced=frozenset([rec["id"]]))
+        rec["gives"] = {"claims": sorted(est1 - graph.established - {rec["id"]}),
+                        "routes": sorted(inv1 - graph.invalidated)}
     for rid, r in graph.routes.items():
         tgt = r.meta.get("target")
         if tgt not in graph.claims:
@@ -2580,7 +2788,8 @@ def generate_site(graph, locks):
         # a junction or a stub
         data["routes"][rid] = {
             "title": r.title, "target": tgt, "requires": reqs, "dead": dead,
-            "killers": killers,
+            "killers": killers, "status": r.status,
+            "blocked": list(getattr(r, "blocked_on", []) or []),
             "arts": artifact_links(r.get_list("artifacts"), web, ref),
             "html": autolink(md_to_html(r.body, idset), idset)}
         if not reqs:
