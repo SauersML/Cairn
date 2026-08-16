@@ -1191,6 +1191,10 @@ background:var(--panel);border:1px solid var(--line)}
 .texd{display:block}
 .texfail{font:12.5px MONO;background:var(--panel);border:1px solid var(--line);
 padding:.05em .3em}
+a.srclink{display:inline-flex;align-items:center;gap:.45em;border:0;
+color:var(--mut);text-decoration:none;font-size:.82rem}
+a.srclink:hover{color:var(--accent)}
+a.srclink svg{flex:none}
 a.fileref{color:var(--ink);border-bottom:1px solid var(--rule);
 text-decoration:none;word-break:break-word}
 a.fileref:hover{color:var(--accent);border-bottom-color:var(--accent)}
@@ -1720,7 +1724,7 @@ def linkify_prose(html_str):
     """Make URLs and file mentions clickable in already-escaped HTML.
 
     File mentions resolve to this site's own rendered page for the file, not
-    to a forge: a reader following a reference should land somewhere the
+    to the source host: a reader following a reference should land where the
     mathematics is typeset, and should not need an account to read it."""
     parts = re.split(r"(<[^>]+>)", html_str)
     out, in_a = [], 0
@@ -2092,14 +2096,19 @@ const zoom=d3.zoom().scaleExtent([.2,3.5])
  .on('zoom',e=>{g.attr('transform',e.transform)});
 svg.call(zoom).on('dblclick.zoom',null);
 const linkForce=d3.forceLink(links).id(d=>d.id)
- .distance(l=>l.kind==='aff'?150:(l.kind==='in'?60:115))
+ .distance(l=>l.kind==='aff'?120:(l.kind==='in'?55:95))
  .strength(l=>l.kind==='aff'?.03+.1*l.w:.55);
+// Repulsion accumulates with node count, so a constant charge that suits a
+// small graph flings a large one into a very wide, thin band: scale it down,
+// cap its reach, and pull harder toward the centre line.
+const CH=-Math.max(150,Math.min(430,9000/Math.sqrt(nodes.length||1)));
 const sim=d3.forceSimulation(nodes)
  .force('link',linkForce)
- .force('charge',d3.forceManyBody().strength(-430))
- .force('x',d3.forceX(W/2).strength(.04))
+ .force('charge',d3.forceManyBody().strength(CH).distanceMax(520))
+ .force('x',d3.forceX(W/2).strength(.11))
  .force('y',d3.forceY(bandY).strength(.5))
- .force('collide',d3.forceCollide(d=>d.type==='claim'?(d.goal?48:38):13));
+ .force('collide',d3.forceCollide(d=>d.type==='claim'?(d.goal?48:38):13))
+ .alphaDecay(.045).velocityDecay(.45);
 const line=g.selectAll('line').data(links.filter(real)).join('line')
  .attr('class',l=>'lk'+(l.kind==='kill'?' kill':'')+(l.dead?' dead':''))
  .attr('marker-end',l=>l.kind==='in'?null:(l.dead||l.kind==='kill'?'url(#mr)':'url(#m)'))
@@ -2110,9 +2119,11 @@ const node=g.selectAll('g.n').data(nodes).join('g')
  .attr('class',d=>'n'+(d.dead?' deadbit':''))
  .style('cursor','pointer')
  .call(d3.drag()
-   .on('start',(e,d)=>{if(!e.active)sim.alphaTarget(.25).restart();d.fx=d.x;d.fy=d.y})
+   .on('start',(e,d)=>{dragging=true;
+     if(!e.active)sim.alphaTarget(.12).restart();d.fx=d.x;d.fy=d.y})
    .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y})
-   .on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null}));
+   .on('end',(e,d)=>{dragging=false;
+     if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;scheduleRelabel()}));
 node.filter(d=>d.type==='claim'&&d.goal).append('circle')
  .attr('r',23).attr('fill','none').attr('stroke','var(--goal)').attr('stroke-width',2.2);
 node.filter(d=>d.type==='claim').append('circle')
@@ -2158,12 +2169,24 @@ LBL.sort((a,b)=>prio(b.d)-prio(a.d));
 // a graph that hides the names of the things it is about is worse than one
 // with some overlap.
 const HIDE_AT=0.5;
+// Placement is O(labels x placed) and touches the DOM, so it runs on a
+// debounce rather than on the tick, and writes only the labels that changed.
+let relabelPending=0;
+function scheduleRelabel(){
+ if(relabelPending)return;
+ relabelPending=setTimeout(()=>{relabelPending=0;relabel()},260);
+}
+function setHidden(o,v){
+ if(o.hidden===v)return;
+ o.hidden=v;
+ o.el.classList.toggle('hidelabel',v);
+}
 function relabel(){
  const sd=document.getElementById('showdead').checked;
  const kept=[];
  for(const o of LBL){
   const d=o.d;
-  if(d.orphan||(d.dead&&!sd)){o.el.classList.add('hidelabel');continue}
+  if(d.orphan||(d.dead&&!sd)){setHidden(o,true);continue}
   const x=d.x-o.w/2,y=d.y+o.top,b=[x,y,x+o.w,y+o.h];
   const area=(b[2]-b[0])*(b[3]-b[1]);
   let worst=0;
@@ -2176,9 +2199,9 @@ function relabel(){
     if(f>worst)worst=f;
    }
   }
-  if(worst>HIDE_AT&&!(d.goal||d.root||d.frontier))
-   o.el.classList.add('hidelabel');
-  else{o.el.classList.remove('hidelabel');kept.push(b)}
+  const hide=worst>HIDE_AT&&!(d.goal||d.root||d.frontier);
+  setHidden(o,hide);
+  if(!hide)kept.push(b);
  }
 }
 node.append('title').text(d=>d.type==='claim'?`${d.id} [${d.status}]`:(d.rtitle||d.route));
@@ -2207,8 +2230,16 @@ function highlight(d){
  line.classed('dim',l=>!(keep.has(l.source.id)&&keep.has(l.target.id)))
      .classed('hot',l=>l.source.id===d.id||l.target.id===d.id);
 }
-node.on('mouseenter',(e,d)=>{if(!selected)highlight(d)})
- .on('mouseleave',()=>{if(!selected)highlight(null)});
+// Guards, because the layout moves under a still cursor: without them the
+// graph fires enter/leave at itself while you drag or while it settles, and
+// each one rewrites classes on every node and edge.
+let dragging=false,hoverId=null;
+node.on('mouseenter',(e,d)=>{
+  if(dragging||selected||hoverId===d.id)return;
+  hoverId=d.id;highlight(d)})
+ .on('mouseleave',(e,d)=>{
+  if(dragging||selected||hoverId!==d.id)return;
+  hoverId=null;highlight(null)});
 // Every id in a panel is a link into the graph, and every artifact is a link
 // out to the file it names -- nothing in the panel is a dead end.
 const idlink=id=>byId[id]
@@ -2264,21 +2295,21 @@ function refreshVis(){
  nodes.forEach(d=>{d.orphan=d.type==='claim'&&!d.root&&!d.goal&&!d.frontier&&!(deg[d.id]>0)});
  node.classed('orphan',d=>d.orphan);
  g.classed('showdead',sd);
- sim.force('charge',d3.forceManyBody().strength(d=>d.orphan?-10:-560));
+ sim.force('charge',d3.forceManyBody()
+  .strength(d=>d.orphan?-10:CH).distanceMax(520));
  linkForce.strength(l=>l.kind==='aff'
   ?((l.source.orphan||l.target.orphan)?0:.03+.1*l.w):.5);
  sim.alpha(.5).restart();
  relabel();
 }
 document.getElementById('showdead').onchange=refreshVis;
-let tk=0;
 sim.on('tick',()=>{
  line.attr('x1',l=>l.source.x).attr('y1',l=>l.source.y)
      .attr('x2',l=>l.target.x).attr('y2',l=>l.target.y);
  node.attr('transform',d=>`translate(${d.x},${d.y})`);
- if((++tk%7)===0)relabel();
+ scheduleRelabel();
 });
-sim.on('end',relabel);
+sim.on('end',()=>{relabelPending=0;relabel()});
 // Centre on a node without losing the reader's zoom level.
 window.focusNode=function(d){
  const t=d3.zoomTransform(svg.node());
@@ -2368,7 +2399,7 @@ def artifact_links(paths, root, ref):
     """[(label, href|None)] for an `artifacts:` list.
 
     Prefer this site's own rendered page for the file, so a reader stays where
-    the mathematics is typeset; fall back to the forge only for files that are
+    the mathematics is typeset; fall back to the source host only for files that are
     not in the working tree (revision pins) or too large to publish."""
     out = []
     for p in paths:
@@ -2387,6 +2418,28 @@ def artifact_links(paths, root, ref):
 
 
 FILE_PAGE_CAP = 5000
+GITHUB_MARK = (
+    '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" '
+    'fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 '
+    '5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49'
+    '-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 '
+    '1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2'
+    '-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 '
+    '.67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 '
+    '2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07'
+    '-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 '
+    '.21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>')
+
+
+def source_link(web, ref, path):
+    """`View source` pointing at wherever the repository is hosted."""
+    if not web:
+        return ""
+    host = re.sub(r"^https?://", "", web).split("/")[0]
+    mark = GITHUB_MARK if host == "github.com" else ""
+    name = "GitHub" if host == "github.com" else host
+    return (f'<a class="srclink" href="{web}/blob/{ref}/{path}" target="_blank" '
+            f'rel="noopener">{mark}<span>View source on {name}</span></a>')
 
 
 def write_file_pages(ids, web, ref):
@@ -2410,8 +2463,7 @@ def write_file_pages(ids, web, ref):
                     text = fh.read()
             except OSError:
                 continue
-            src = (f'<a href="{web}/blob/{ref}/{path}" target="_blank" '
-                   f'rel="noopener">view source on the forge</a>' if web else "")
+            src = source_link(web, ref, path)
             head = (f"<h1><span class='node'>file</span>{html.escape(path)}</h1>"
                     f"<p class='muted'>{src}</p>")
             if path.lower().endswith(".md"):
@@ -2430,7 +2482,8 @@ def write_file_pages(ids, web, ref):
     dropped = len(REFERENCED_FILES) - written
     if dropped > 0:
         print(f"note: {dropped} referenced file(s) not published "
-              f"(cap {FILE_PAGE_CAP} or unreadable); those links fall back to the forge")
+              f"(cap {FILE_PAGE_CAP} or unreadable); those links fall back "
+              f"to the source host")
     return written
 
 
