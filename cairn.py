@@ -92,6 +92,17 @@ ancestor of the working directory containing a research/ directory, else
 the nearest such ancestor of THIS FILE (so a copy committed into a repo
 finds that repo from anywhere), else the working directory itself.
 
+STATE: .cairn/ under the root holds what belongs to ONE COPY of the
+project — the compile cache and the generated site. Leases and the usage
+log belong to the PROGRAM, so they live once per project under
+$XDG_STATE_HOME/cairn/<owner>-<repo> (from the git remote, the one string
+every clone agrees on; the root commit when there is no remote; $CAIRN_STATE
+to say so directly). Workers run in throwaway clones and worktrees: under
+.cairn/ a lease is invisible to everyone it should warn, and the usage log
+is discarded with the directory. Neither key exists in a zip, which has
+nothing to share with, so there it stays local. Every telemetry row carries
+which copy ran it, and $CAIRN_AGENT when a harness sets one.
+
 SITE TITLE: the generated site is titled $CAIRN_SITE_TITLE if set, else
 after the tool.  Set it to the name of the project the graph is about.
 
@@ -136,16 +147,80 @@ REPO = _find_root()
 RESEARCH_DIR = os.path.join(REPO, "research")
 NOTES_DIR = os.path.join(REPO, "notes")
 STATE_DIR = os.path.join(REPO, ".cairn")
-LOCK_DIR = os.path.join(STATE_DIR, "locks")
-CACHE_DIR = os.path.join(STATE_DIR, "cache")
-SITE_DIR = os.path.join(STATE_DIR, "site")
-TELEMETRY = os.path.join(STATE_DIR, "telemetry.jsonl")
+CACHE_DIR = os.path.join(STATE_DIR, "cache")   # per checkout: derived, disposable
+SITE_DIR = os.path.join(STATE_DIR, "site")     # per checkout: a build artifact
+_SHARED = None
+
+
+def shared_dir():
+    """Where state that is about the PROGRAM lives, rather than about one
+    copy of it: leases and the usage log.
+
+    Workers run in throwaway clones and worktrees. Kept under .cairn/, a
+    lease is invisible to every worker it is supposed to warn, and the usage
+    log is thrown away with the directory it was written in — which is how a
+    project ends up with 83 commits of graph edits and no record that the
+    tool was ever run. The git remote is the same string in every copy, so
+    it names the program; the root commit does when there is no remote.
+    Neither exists in a zip, and a zip has nothing to share with anyway.
+    """
+    global _SHARED
+    if _SHARED:
+        return _SHARED
+    env = os.environ.get("CAIRN_STATE")
+    if env:
+        _SHARED = os.path.abspath(env)
+        return _SHARED
+    stamp = os.path.join(CACHE_DIR, "project-key")   # resolved once per checkout
+    key = ""
+    try:
+        with open(stamp, encoding="utf-8") as f:
+            key = f.read().strip()
+    except OSError:
+        r = _git("config", "--get", "remote.origin.url")
+        m = re.search(r"([^/:]+)/([^/]+?)(?:\.git)?/?$",
+                      r.stdout.strip()) if r.returncode == 0 else None
+        if m:  # owner and name both, or two owners of a `docs` repo collide
+            key = re.sub(r"[^a-z0-9]+", "-", f"{m[1]}-{m[2]}".lower()).strip("-")
+        else:
+            r = _git("rev-list", "--max-parents=0", "HEAD")
+            if r.returncode == 0 and r.stdout.strip():
+                key = r.stdout.split()[-1][:12]
+        try:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            with open(stamp, "w", encoding="utf-8") as f:
+                f.write(key)
+        except OSError:
+            pass
+    if not key:
+        _SHARED = STATE_DIR      # no git: an isolated copy, nothing to share
+        return _SHARED
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "state")
+    _SHARED = os.path.join(base, "cairn", key)
+    return _SHARED
+
+
+def lock_dir():
+    return os.path.join(shared_dir(), "locks")
+
+
+def telemetry_path():
+    path = os.path.join(shared_dir(), "telemetry.jsonl")
+    legacy = os.path.join(STATE_DIR, "telemetry.jsonl")
+    if path != legacy and not os.path.exists(path) and os.path.exists(legacy):
+        try:  # carry this checkout's history into the shared log, once
+            os.makedirs(shared_dir(), exist_ok=True)
+            shutil.copyfile(legacy, path)
+        except OSError:
+            pass
+    return path
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 NON_NODE_FILES = {"README.md", "FRONTIER.md"}
 KINDS = ("claim", "route")
 
-__version__ = "2.5.1"
+__version__ = "2.6.0"
 
 EXIT_OK, EXIT_DUP, EXIT_LEASE, EXIT_INVALID, EXIT_USAGE = 0, 2, 3, 4, 64
 
@@ -320,27 +395,27 @@ def load_nodes(errors, research_dir=RESEARCH_DIR, relroot=REPO):
             with open(path, encoding="utf-8") as f:
                 meta, body = parse_frontmatter(f.read(), rel)
         except FrontmatterError as e:
-            errors.append(("error", str(e)))
+            errors.append(("error", "frontmatter", str(e)))
             continue
         kind = meta.get("kind")
         if kind not in KINDS:
-            errors.append(("error", f"{rel}: kind must be claim|route, got {kind!r}"))
+            errors.append(("error", "kind", f"{rel}: kind must be claim|route, got {kind!r}"))
             continue
         node = Node(meta, body, path, kind, relroot)
         nid = meta.get("id")
         if not isinstance(nid, str) or not ID_RE.match(nid):
-            errors.append(("error", f"{rel}: missing or malformed id (want a kebab-case slug), got {nid!r}"))
+            errors.append(("error", "id", f"{rel}: missing or malformed id (want a kebab-case slug), got {nid!r}"))
             continue
         if os.path.splitext(fn)[0] != nid:
-            errors.append(("error", f"{rel}: filename must equal id ({nid}.md)"))
+            errors.append(("error", "filename", f"{rel}: filename must equal id ({nid}.md)"))
             continue
         if nid in nodes:
-            errors.append(("error", f"{rel}: duplicate id {nid} (also {nodes[nid].relpath})"))
+            errors.append(("error", "duplicate-id", f"{rel}: duplicate id {nid} (also {nodes[nid].relpath})"))
             continue
         if not meta.get("title"):
-            errors.append(("error", f"{rel}: missing title"))
+            errors.append(("error", "title", f"{rel}: missing title"))
         if meta.get("rg") != 2:
-            errors.append(("error", f"{rel}: missing or unsupported schema version (want 'rg: 2')"))
+            errors.append(("error", "schema", f"{rel}: missing or unsupported schema version (want 'rg: 2')"))
         nodes[nid] = node
     return nodes
 
@@ -348,21 +423,21 @@ def load_nodes(errors, research_dir=RESEARCH_DIR, relroot=REPO):
 def lint_nodes(nodes, errors, repo=REPO):
     def ref(node, key, val, want_kind):
         if not isinstance(val, str) or not ID_RE.match(val):
-            errors.append(("error", f"{node.relpath}: {key}: malformed id {val!r}"))
+            errors.append(("error", "ref", f"{node.relpath}: {key}: malformed id {val!r}"))
         elif val not in nodes:
-            errors.append(("error", f"{node.relpath}: {key}: unknown node {val}"))
+            errors.append(("error", "ref", f"{node.relpath}: {key}: unknown node {val}"))
         elif val == node.id:
-            errors.append(("error", f"{node.relpath}: {key}: self-reference"))
+            errors.append(("error", "ref", f"{node.relpath}: {key}: self-reference"))
         elif nodes[val].kind != want_kind:
-            errors.append(("error", f"{node.relpath}: {key}: {val} is a {nodes[val].kind}, want a {want_kind}"))
+            errors.append(("error", "ref", f"{node.relpath}: {key}: {val} is a {nodes[val].kind}, want a {want_kind}"))
 
     for node in nodes.values():
         extra = set(node.meta) - ALLOWED_KEYS[node.kind]
         if extra:
-            errors.append(("error", f"{node.relpath}: unknown keys for {node.kind}: {sorted(extra)}"))
+            errors.append(("error", "unknown-key", f"{node.relpath}: unknown keys for {node.kind}: {sorted(extra)}"))
         for p in node.get_list("artifacts"):
             if not isinstance(p, str):
-                errors.append(("error", f"{node.relpath}: malformed artifact entry: {p!r}"))
+                errors.append(("error", "artifact", f"{node.relpath}: malformed artifact entry: {p!r}"))
                 continue
             path_part = p
             if not os.path.exists(os.path.join(repo, p)):
@@ -371,43 +446,43 @@ def lint_nodes(nodes, errors, repo=REPO):
                     ["git", "-C", repo, "cat-file", "-e", p],
                     capture_output=True).returncode == 0)
                 if not pinned:
-                    errors.append(("error", f"{node.relpath}: artifact not found: {p} "
+                    errors.append(("error", "artifact", f"{node.relpath}: artifact not found: {p} "
                                    "(want a working-tree path or a <rev>:<path> pin)"))
                     continue
                 path_part = p.split(":", 1)[1]
             if path_part.startswith("notes/") or "/notes/" in path_part:
-                errors.append(("error", f"{node.relpath}: canonical node cites noncanonical justification: {p}"))
+                errors.append(("error", "noncanonical", f"{node.relpath}: canonical node cites noncanonical justification: {p}"))
         if node.kind == "claim":
             if node.meta.get("root") not in (None, True, False):
-                errors.append(("error", f"{node.relpath}: root must be true/false"))
+                errors.append(("error", "flag", f"{node.relpath}: root must be true/false"))
             if node.meta.get("goal") not in (None, True, False):
-                errors.append(("error", f"{node.relpath}: goal must be true/false"))
+                errors.append(("error", "flag", f"{node.relpath}: goal must be true/false"))
             for r in node.get_list("invalidates"):
                 ref(node, "invalidates", r, "route")
             df = node.meta.get("distinct_from")
             if df is not None:
                 if not isinstance(df, dict):
-                    errors.append(("error", f"{node.relpath}: distinct_from must be a map {{claim-id: why}}"))
+                    errors.append(("error", "distinct-from", f"{node.relpath}: distinct_from must be a map {{claim-id: why}}"))
                 else:
                     for k, why in df.items():
                         if k not in nodes or nodes[k].kind != "claim":
-                            errors.append(("error", f"{node.relpath}: distinct_from: unknown claim {k!r}"))
+                            errors.append(("error", "distinct-from", f"{node.relpath}: distinct_from: unknown claim {k!r}"))
                         if not why:
-                            errors.append(("error", f"{node.relpath}: distinct_from: {k} needs a reason"))
+                            errors.append(("error", "distinct-from", f"{node.relpath}: distinct_from: {k} needs a reason"))
         else:
             tgt = node.meta.get("target")
             if not isinstance(tgt, str) or tgt not in nodes or nodes[tgt].kind != "claim":
-                errors.append(("error", f"{node.relpath}: target must name an existing claim, got {tgt!r}"))
+                errors.append(("error", "target", f"{node.relpath}: target must name an existing claim, got {tgt!r}"))
             if "requires" not in node.meta:
-                errors.append(("error", f"{node.relpath}: requires is mandatory "
+                errors.append(("error", "requires", f"{node.relpath}: requires is mandatory "
                                "(requires: [] asserts a complete direct proof)"))
             reqs = node.get_list("requires")
             for q in reqs:
                 ref(node, "requires", q, "claim")
             if len(reqs) != len(set(reqs)):
-                errors.append(("error", f"{node.relpath}: duplicate entries in requires"))
+                errors.append(("error", "requires", f"{node.relpath}: duplicate entries in requires"))
             if isinstance(tgt, str) and tgt in reqs:
-                errors.append(("error", f"{node.relpath}: target appears in its own requires"))
+                errors.append(("error", "requires", f"{node.relpath}: target appears in its own requires"))
             # restatement dressed as reduction: a single-prerequisite route
             # whose prerequisite reads like its target renames the problem
             if (len(reqs) == 1 and reqs[0] in nodes and isinstance(tgt, str)
@@ -422,7 +497,7 @@ def lint_nodes(nodes, errors, repo=REPO):
                             != _negated(b.title + " " + b.id))
                 if (t and u and not answered and not opposite and len(t & u) >= 3
                         and len(t & u) / len(t | u) >= DUP_LEXICAL):
-                    errors.append(("warning", f"{node.relpath}: prerequisite {reqs[0]} "
+                    errors.append(("warning", "restatement", f"{node.relpath}: prerequisite {reqs[0]} "
                                    f"reads like a restatement of target {tgt}; "
                                    "if the route only renames the problem, replace the "
                                    "prerequisite with one that can independently fail"))
@@ -489,7 +564,7 @@ class Graph:
 
         est, inv, prov, stable = self._solve()
         if not stable:
-            self.errors.append(("error", "invalidation is not stratified: establishment and "
+            self.errors.append(("error", "stratification", "invalidation is not stratified: establishment and "
                                 "invalidation oscillate; break the cycle between an obstruction "
                                 "claim and a route it depends on"))
         self.established, self.invalidated, self.provenance = est, inv, prov
@@ -573,7 +648,7 @@ class Graph:
             elif not live:
                 self.detached_tops.append(cid)
         for cid in self.dead_work:
-            self.errors.append(("warning", f"{self.claims[cid].relpath}: every "
+            self.errors.append(("warning", "dead-work", f"{self.claims[cid].relpath}: every "
                                 f"route that needs {cid} is invalidated — the "
                                 "hole is no longer load-bearing; retarget it or "
                                 "let it stand as recorded dead space"))
@@ -581,7 +656,7 @@ class Graph:
         if detached:
             n_below = len(detached) - len(self.detached_tops)
             self.errors.append((
-                "warning",
+                "warning", "detached",
                 f"{len(detached)} open claim(s) sit on no live path to a root "
                 f"claim: {len(self.detached_tops)} lane top(s)"
                 + (f" and {n_below} claim(s) below them" if n_below else "")
@@ -619,7 +694,7 @@ class Graph:
             if len(ring) < 3 or frozenset(ring) in seen:
                 continue
             seen.add(frozenset(ring))
-            self.errors.append(("warning", f"dependency cycle through claims: {' -> '.join(path)}"))
+            self.errors.append(("warning", "cycle", f"dependency cycle through claims: {' -> '.join(path)}"))
 
     def to_json(self):
         out = {"generated_by": "cairn build", "rg": 2, "nodes": {}, "derived": {}}
@@ -643,14 +718,18 @@ def compile_graph(research_dir=RESEARCH_DIR, repo=REPO):
     return Graph(nodes, errors, repo), errors
 
 
+LINT_COUNTS = {}  # rule -> times fired this run, for telemetry
+
+
 def report_errors(errors, fail_on_warning=False, brief=False):
     # brief (query commands): errors in full, warnings collapsed to one
     # line. Re-printing every warning on every invocation trains agents
     # to append 2>/dev/null, which then swallows real errors too.
     n = 0
-    warnings = [m for s, m in errors if s == "warning"]
+    warnings = [m for s, _, m in errors if s == "warning"]
     collapse = brief and not fail_on_warning
-    for sev, msg in errors:
+    for sev, rule, msg in errors:
+        LINT_COUNTS[rule] = LINT_COUNTS.get(rule, 0) + 1
         if sev == "warning" and collapse:
             continue
         print(f"{sev.upper()}: {msg}", file=sys.stderr)
@@ -805,7 +884,7 @@ def duplicate_findings(graph, only_ids=None, vecs=None):
 # ---------------------------------------------------------------------------
 
 def _lock_path(nid):
-    return os.path.join(LOCK_DIR, f"{nid}.json")
+    return os.path.join(lock_dir(), f"{nid}.json")
 
 
 def parse_ttl(s):
@@ -831,10 +910,10 @@ def read_lock(nid):
 
 
 def all_locks():
-    if not os.path.isdir(LOCK_DIR):
+    if not os.path.isdir(lock_dir()):
         return {}
     out = {}
-    for fn in sorted(os.listdir(LOCK_DIR)):
+    for fn in sorted(os.listdir(lock_dir())):
         if fn.endswith(".json"):
             lock = read_lock(fn[:-5])
             if lock:
@@ -844,11 +923,11 @@ def all_locks():
 
 def acquire_lock(nid, ttl_seconds):
     # Claims are identity-free and advisory: one team; TTL handles crashes.
-    os.makedirs(LOCK_DIR, exist_ok=True)
+    os.makedirs(lock_dir(), exist_ok=True)
     now = time.time()
     payload = {"node": nid, "acquired_at": now,
                "ttl_seconds": ttl_seconds, "expires_at": now + ttl_seconds}
-    with open(os.path.join(LOCK_DIR, ".mutex"), "w") as mtx:
+    with open(os.path.join(lock_dir(), ".mutex"), "w") as mtx:
         fcntl.flock(mtx, fcntl.LOCK_EX)
         existing = read_lock(nid)
         if existing:
@@ -3214,16 +3293,43 @@ def head_graph():
     os.makedirs(STATE_DIR, exist_ok=True)
     tmp = tempfile.mkdtemp(prefix="head-", dir=STATE_DIR)
     if r.returncode == 0:
-        for p in r.stdout.splitlines():
-            if (not p.endswith(".md") or os.path.basename(p) in NON_NODE_FILES
-                    or "/" in p[len("research/"):]):
-                continue
-            show = _git("show", f"HEAD:{p}")
-            if show.returncode == 0:
-                with open(os.path.join(tmp, os.path.basename(p)), "w", encoding="utf-8") as f:
-                    f.write(show.stdout)
+        want = [p for p in r.stdout.splitlines()
+                if p.endswith(".md") and os.path.basename(p) not in NON_NODE_FILES
+                and "/" not in p[len("research/"):]]
+        # One `git cat-file --batch` for the whole tree. A `git show` per node
+        # meant ~900 process spawns, which is the entire reason preview ran a
+        # hundred times slower than every other command — and why the loop
+        # step it implements got skipped.
+        for path, blob in _cat_file_batch([f"HEAD:{p}" for p in want], want):
+            with open(os.path.join(tmp, os.path.basename(path)), "wb") as f:
+                f.write(blob)
     graph, errors = compile_graph(research_dir=tmp, repo=REPO)
     return graph, errors, tmp
+
+
+def _cat_file_batch(revs, paths):
+    """(path, bytes) for each rev, over a single git process. The batch
+    protocol is `<sha> <type> <size>\\n<size bytes>\\n` per request, or a
+    single line ending in `missing` when the object is not there."""
+    if not revs:
+        return
+    proc = subprocess.run(["git", "-C", REPO, "cat-file", "--batch"],
+                          input="\n".join(revs).encode() + b"\n",
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if proc.returncode != 0:
+        return
+    out, at = proc.stdout, 0
+    for path in paths:
+        nl = out.find(b"\n", at)
+        if nl < 0:
+            return
+        header = out[at:nl].split()
+        at = nl + 1
+        if len(header) < 3:      # "<rev> missing"
+            continue
+        size = int(header[2])
+        yield path, out[at:at + size]
+        at += size + 1           # trailing newline git adds after each blob
 
 
 def previous_graph(changed_ids):
@@ -3365,7 +3471,7 @@ def cmd_check(args):
     dups = duplicate_findings(graph, only_ids=only)
     policy_sev = "error" if args.changed else "warning"
     for cid, cand, score in dups:
-        errors.append((policy_sev, f"possible duplicate claim: {cid} vs {cand} "
+        errors.append((policy_sev, "duplicate", f"possible duplicate claim: {cid} vs {cand} "
                        f"(similarity {score}); if genuinely distinct, add to {cid}:\n"
                        f"  distinct_from:\n    {cand}: <why this is not that>"))
     # naming a hole is not finishing it: a NEW open claim must record at
@@ -3380,7 +3486,7 @@ def cmd_check(args):
               if not graph.claims[cid].meta.get("goal")
               and missing_attempts(graph.claims[cid].body)]
     for cid in parked:
-        errors.append((policy_sev,
+        errors.append((policy_sev, "parked",
                        f"{graph.claims[cid].relpath}: new open claim {cid} parks a "
                        "hole with no recorded attack — add an '## Attempts' section: "
                        "at least one approach and where it dies, or one line on why "
@@ -3485,11 +3591,14 @@ def cmd_preview(args):
         for cid, cand, score in dups:
             delta["dup_warnings"].append({"new": cid, "existing": cand, "score": score})
             L.append(f"  {cid} strongly overlaps {cand} (similarity {score})")
-    errs = [m for s, m in errors if s == "error"]
+    errs = [m for s, _, m in errors if s == "error"]
     if errs:
         delta["errors"] = errs
         L += ["", "Errors in working tree:"] + [f"  {e}" for e in errs]
-    L += ["", "No canonical state committed."]
+    if not old.nodes:
+        # unconditional before, so a project with 449 committed claims was
+        # told on every preview that it had committed nothing
+        L += ["", "No canonical state committed yet — everything above is new."]
     return emit(args, {"status": "ok", **delta}, "\n".join(L),
                 EXIT_INVALID if errs else (EXIT_DUP if dups else EXIT_OK))
 
@@ -3827,12 +3936,24 @@ TELEMETRY_EXTRA = {}  # commands may deposit counters (e.g. banner sizes)
 
 def record_telemetry(cmd, argv, code, ms):
     try:
-        os.makedirs(STATE_DIR, exist_ok=True)
+        path = telemetry_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "cmd": cmd,
-                 "argv": argv, "exit": code, "ms": ms}
-        if TELEMETRY_EXTRA:
-            entry["extra"] = dict(TELEMETRY_EXTRA)
-        with open(TELEMETRY, "a", encoding="utf-8") as f:
+                 "argv": argv, "exit": code, "ms": ms,
+                 # which copy of the program ran this. The log is shared
+                 # across clones now, so without it "who is stuck" has no
+                 # answer; unlike an agent name it costs nobody anything.
+                 "from": os.path.basename(REPO)}
+        if os.environ.get("CAIRN_AGENT"):
+            entry["agent"] = os.environ["CAIRN_AGENT"]
+        extra = dict(TELEMETRY_EXTRA)
+        if LINT_COUNTS:
+            # WHICH rule fired, not just that something did: a 38% failure
+            # rate over `check` is unactionable until it names a rule
+            extra["lint"] = dict(sorted(LINT_COUNTS.items()))
+        if extra:
+            entry["extra"] = extra
+        with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
     except OSError:
         pass  # telemetry must never break a command
@@ -3841,7 +3962,7 @@ def record_telemetry(cmd, argv, code, ms):
 def read_telemetry():
     entries = []
     try:
-        with open(TELEMETRY, encoding="utf-8") as f:
+        with open(telemetry_path(), encoding="utf-8") as f:
             for line in f:
                 try:
                     entries.append(json.loads(line))
@@ -3864,13 +3985,18 @@ def cmd_telemetry(args):
         return emit(args, payload, human)
     if not entries:
         return emit(args, {"status": "ok", "total": 0}, "(no telemetry yet)")
-    per_cmd, per_exit = {}, {}
+    per_cmd, per_exit, per_rule, per_repo = {}, {}, {}, {}
     for e in entries:
         c = per_cmd.setdefault(e["cmd"], {"n": 0, "errors": 0, "ms": []})
         c["n"] += 1
         c["errors"] += e["exit"] != 0
         c["ms"].append(e.get("ms", 0))
         per_exit[str(e["exit"])] = per_exit.get(str(e["exit"]), 0) + 1
+        who = e.get("agent") or e.get("from")
+        if who:
+            per_repo[who] = per_repo.get(who, 0) + 1
+        for rule, n in (e.get("extra", {}).get("lint") or {}).items():
+            per_rule[rule] = per_rule.get(rule, 0) + n
     unused = sorted(set(COMMANDS) - {"telemetry", "build", "relevant"} - set(per_cmd))
     L = [f"{len(entries)} invocations, {entries[0]['ts']} .. {entries[-1]['ts']}", "",
          f"{'command':<12} {'n':>5} {'errs':>5} {'med ms':>7}"]
@@ -3881,10 +4007,18 @@ def cmd_telemetry(args):
         stats[cmd] = {"n": c["n"], "errors": c["errors"], "median_ms": med}
         L.append(f"{cmd:<12} {c['n']:>5} {c['errors']:>5} {med:>7}")
     L += ["", "exit codes: " + ", ".join(f"{k}: {v}" for k, v in sorted(per_exit.items()))]
+    if per_rule:
+        L += ["", "lint findings by rule — what the graph actually trips on:"]
+        L += [f"  {r:<16} {n:>6}" for r, n in
+              sorted(per_rule.items(), key=lambda kv: -kv[1])]
+    if len(per_repo) > 1:
+        L += ["", "by worker: " + ", ".join(
+            f"{w} {n}" for w, n in sorted(per_repo.items(), key=lambda kv: -kv[1]))]
     if unused:
         L += ["", "never used (candidates to rethink or cut): " + ", ".join(unused)]
     payload = {"status": "ok", "total": len(entries), "per_command": stats,
-               "per_exit": per_exit, "never_used": unused}
+               "per_exit": per_exit, "per_rule": per_rule, "per_worker": per_repo,
+               "never_used": unused, "log": telemetry_path()}
     return emit(args, payload, "\n".join(L))
 
 
@@ -3908,7 +4042,9 @@ def main():
                       "unattacked new holes) · 3 already claimed · 4 invalid "
                       "graph · 64 usage · 1 runtime error. Env: CAIRN_ROOT "
                       "overrides project-root discovery; CAIRN_SITE_TITLE "
-                      "names the generated site.")
+                      "names the generated site; CAIRN_STATE overrides where "
+                      "leases and the usage log live; CAIRN_AGENT labels this "
+                      "worker in the log.")
     p.add_argument("--version", action="version", version=f"cairn {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 

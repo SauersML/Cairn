@@ -100,7 +100,8 @@ that justify the node.
 | `research/*.md` | **Canonical.** The authoritative graph. Humans and agents edit these directly with their normal tools; the CLI never writes them. |
 | `research/artifacts/` | Substantial proof artifacts routes may cite. |
 | `notes/` | Scratch, session logs, thinking out loud. Searchable (`cairn search --notes`) but **noncanonical**: notes can never change compiled state, and canonical files may not cite them as justification (lint enforces this). |
-| `.cairn/` | Machine state — cache, locks, telemetry, generated site. Never commit it. |
+| `.cairn/` | This copy's machine state — compile cache, generated site. Never commit it. |
+| `$XDG_STATE_HOME/cairn/<owner>-<repo>/` | The **program's** state — leases and the usage log — keyed off the git remote, so every clone and worktree of the project shares one. Under `.cairn/` a lease was invisible to every worker it should warn, and the log was thrown away with the throwaway clone that wrote it. |
 
 ## The compiler
 
@@ -152,7 +153,7 @@ Read-only over canonical files and deliberately small — twelve commands:
 | `lock <id> --ttl 45m` | claim a hole (advisory, identity-free); every reply lists the full active-lock roster |
 | `unlock <id>` | release a claim |
 | `site` | static HTML site into `.cairn/site/` (`--serve` to preview) |
-| `telemetry` | usage summary: what workers actually run, and what they never touch |
+| `telemetry` | usage summary: what workers actually run, what they never touch, which lint rule the graph keeps tripping on, and which copy of the project each invocation came from |
 
 Exit codes are stable for scripting: `0` ok, `2` duplicate candidates,
 `3` already claimed, `4` invalid graph, `64` usage error, `1` runtime
@@ -176,6 +177,14 @@ each trace to a real agent session:
   `check` prints them all, with reconnect hints. Re-printing nine
   warnings before every command trains agents into `2>/dev/null` —
   which then swallows real errors too.
+- **The log has to answer the question it provokes.** A real program's
+  telemetry said `check --changed` failed 64% of the time and could not
+  say why, because rows recorded an exit code and nothing else. Every
+  lint finding now carries a rule name, so `telemetry` ends with a
+  by-rule table. The same log showed 83 commits of graph edits with zero
+  recorded invocations — the work was happening in throwaway clones,
+  each writing to its own `.cairn/` and taking the evidence with it when
+  it was deleted. Leases and the log are keyed off the git remote now.
 - **A warning that is usually wrong is worse than no warning.** On a
   449-claim program the old detectors produced 30 findings of which 7
   were real: token overlap flagged whole `id`-prefix families and even

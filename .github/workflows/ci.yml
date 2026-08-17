@@ -189,6 +189,27 @@ jobs:
           if ../bin/cairn check 2>&1 | grep -q "dependency cycle"; then exit 1; fi
           ../bin/cairn check --strict
 
+      # "38% of checks fail" is unactionable until the log names a rule.
+      - name: Telemetry names the rule that fired
+        working-directory: w
+        run: |
+          cat > research/bad-key.md <<'EOF'
+          ---
+          rg: 2
+          id: bad-key
+          kind: claim
+          title: A claim carrying a key the schema does not allow
+          status: established
+          ---
+
+          The `status:` key does not exist; status is computed, never declared.
+          EOF
+          code=0; ../bin/cairn check || code=$?
+          [ "$code" -eq 4 ]
+          ../bin/cairn telemetry --json | grep '"unknown-key"'
+          ../bin/cairn telemetry | grep "lint findings by rule"
+          rm research/bad-key.md
+
       - name: site --serve answers HTTP
         working-directory: t
         run: |
