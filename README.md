@@ -120,9 +120,17 @@ cycle). It then derives:
   doesn't reach the goal without this one (the forced-solve run in
   reverse);
 - **impact**: how many live routes are waiting on each claim;
-- warnings for cycles, unreachable open claims (with reconnect hints),
-  and **possible duplicate claims** (token-overlap similarity, silenced
-  by `distinct_from`).
+- warnings, each of which has to earn its line:
+  **possible duplicate claims** — title overlap *and* a TF-IDF gate over
+  title + body, because sharing the program's subject is not being the
+  same claim, and a negation never matches its positive (silenced for
+  good by `distinct_from`);
+  **dead work** — every route that needed this hole is invalidated, so
+  it stopped being load-bearing;
+  **detached lanes** — one line with a count, not one line per claim,
+  since reconnecting a lane's top carries everything under it;
+  and **circular reasoning** — but never `A ⟺ B`, which is the kernel's
+  own way to write an equivalence.
 
 Outputs: `.cairn/cache/graph.json` (machine) and `research/FRONTIER.md`
 (human dashboard, regenerated every run).
@@ -168,6 +176,12 @@ each trace to a real agent session:
   `check` prints them all, with reconnect hints. Re-printing nine
   warnings before every command trains agents into `2>/dev/null` —
   which then swallows real errors too.
+- **A warning that is usually wrong is worse than no warning.** On a
+  449-claim program the old detectors produced 30 findings of which 7
+  were real: token overlap flagged whole `id`-prefix families and even
+  scored a claim against its own negation, and every claim in a
+  detached lane was reported separately. The rewrite leaves 5 — and CI
+  now pins each retired false positive as a case that must stay silent.
 - **A goal with no route-tree gets a route-finding prompt**, not an
   empty list: "decompose it, don't hunt lemmas" is the mode switch
   agents are worst at making on their own.
@@ -317,7 +331,24 @@ cairn root is the git repository root.)
 
 ## Quick start
 
-A complete project is three files:
+Cairn is one dependency-free Python file. **Commit it into the repo it
+compiles.** Then a clone, a *Download ZIP*, a tarball, and an offline
+sandbox all arrive with a working CLI, and nobody who opens the repo
+next has a setup step:
+
+```sh
+mkdir -p bin
+curl -fsSLo bin/cairn https://raw.githubusercontent.com/SauersML/Cairn/main/cairn.py
+chmod +x bin/cairn && git add bin/cairn
+```
+
+Not a submodule and not a package install. A submodule is *empty* in
+every copy that isn't a git clone, and a package install needs a
+network — both turn "read the graph" into "first, fix your checkout".
+`bin/cairn` finds the project from its own path, so it works from any
+directory. To upgrade, re-run the `curl` and commit the diff.
+
+The graph itself is three files:
 
 ```sh
 mkdir -p research notes && echo '.cairn/' >> .gitignore
@@ -360,8 +391,8 @@ Why the lemma implies the conjecture. This body is a mathematical
 commitment: the route's existence asserts the implication is valid.
 EOF
 
-cairn check      # compiles; writes research/FRONTIER.md
-cairn frontier   # -> key-lemma, ★ on every live path to main-conjecture
+bin/cairn check      # compiles; writes research/FRONTIER.md
+bin/cairn frontier   # -> key-lemma, ★ on every live path to main-conjecture
 ```
 
 The moment someone adds a route with `requires: []` targeting

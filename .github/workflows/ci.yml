@@ -134,6 +134,61 @@ jobs:
           ../bin/cairn why main-conjecture | grep "via via-key-lemma"
           ../bin/cairn status --json | grep '"established": 2'
 
+      # A warning nobody can act on costs more than it saves: workers learn
+      # to pipe check through 2>/dev/null, and then a real error is invisible
+      # too. Each of these fired on a real 449-claim program and was wrong.
+      - name: Warnings earn their line
+        run: |
+          mkdir -p w/research
+          cd w
+          cat > research/alpha-bound.md <<'EOF'
+          ---
+          rg: 2
+          id: alpha-bound
+          kind: claim
+          title: The quadrant split admits a compression bound
+          root: true
+          ---
+
+          The quadrant split of a sofic group admits a compression bound.
+          EOF
+          cp research/alpha-bound.md research/beta-bound.md
+          sed -i 's/id: alpha-bound/id: beta-bound/' research/beta-bound.md
+          # the same claim written twice is exactly what the detector is for
+          ../bin/cairn check 2>&1 | grep "possible duplicate claim: alpha-bound vs beta-bound"
+          # ...but a negation is not a duplicate, however much wording it shares
+          sed -i 's/admits a compression bound/does not admit a compression bound/' \
+            research/beta-bound.md
+          if ../bin/cairn check 2>&1 | grep -q "possible duplicate"; then exit 1; fi
+          # an equivalence is two routes, one each way — the kernel's own
+          # encoding, not circular reasoning
+          cat > research/alpha-from-beta.md <<'EOF'
+          ---
+          rg: 2
+          id: alpha-from-beta
+          kind: route
+          title: Alpha from beta
+          target: alpha-bound
+          requires: [beta-bound]
+          ---
+
+          One direction.
+          EOF
+          cat > research/beta-from-alpha.md <<'EOF'
+          ---
+          rg: 2
+          id: beta-from-alpha
+          kind: route
+          title: Beta from alpha
+          target: beta-bound
+          requires: [alpha-bound]
+          ---
+
+          The converse.
+          EOF
+          if ../bin/cairn check 2>&1 | grep -q "dependency cycle"; then exit 1; fi
+          ../bin/cairn check --strict
+
       - name: site --serve answers HTTP
         working-directory: t
         run: |

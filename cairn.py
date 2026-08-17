@@ -37,14 +37,26 @@ first; --goal for one cone, --flat for the ungrouped list), why
 context --budget (statement, derivation, routes, reusable claims, dead
 space in one bounded packet), search [--notes|--similar] (alias:
 relevant = search --similar), impact, lock/unlock (advisory TTL claims —
-identity-free: everyone is one team), site [--serve], telemetry. Claims
-are scheduler state, never committed into mathematical history.
+identity-free: everyone is one team), site [--serve], telemetry, vendor
+(bootstrap, below). Claims are scheduler state, never committed into
+mathematical history.
+
+INSTALLING INTO A PROJECT: copy this file into the repo and commit it.
+Do not use a submodule or a package install — a submodule is empty in
+every copy that is not a git clone (a "Download ZIP", a tarball, an
+uploaded sandbox), and a package install needs a network. The file is
+stdlib-only and self-locating, so a committed copy works everywhere the
+repo goes, with no setup step for whoever opens it next.
 
 AGENT ERGONOMICS (each of these exists because transcripts showed the
 lack of it costing real work): line 1 of `why` is always
 `<id> [STATUS] — …` so `| head -1` learns something; query commands
 collapse graph warnings to one line (spam trains agents into
 `2>/dev/null`, which then eats real errors — `check` prints them all);
+every warning has to earn its line, so duplicate detection needs BOTH
+wording overlap and a TF-IDF gate and never matches a claim against its
+own negation, a detached lane is one counted line rather than one per
+claim in it, and `A <=> B` is the kernel's equivalence, never a cycle;
 `frontier` marks holes on EVERY live path to a goal with ★, prints the
 claim-path each hole unblocks, warns when a goal has no route-tree at
 all (that means route-finding, not lemma-proving), and annotates holes
@@ -77,7 +89,8 @@ Exit categories (stable, for agents): 0 ok, 2 policy findings
 
 ROOT DISCOVERY: the project root is $CAIRN_ROOT if set, else the nearest
 ancestor of the working directory containing a research/ directory, else
-the working directory itself.
+the nearest such ancestor of THIS FILE (so a copy committed into a repo
+finds that repo from anywhere), else the working directory itself.
 
 SITE TITLE: the generated site is titled $CAIRN_SITE_TITLE if set, else
 after the tool.  Set it to the name of the project the graph is about.
@@ -97,18 +110,26 @@ import sys
 import tempfile
 import time
 
-def _find_root():
-    env = os.environ.get("CAIRN_ROOT")
-    if env:
-        return os.path.abspath(env)
-    d = os.getcwd()
+def _project_above(start):
+    d = os.path.abspath(start)
     while True:
         if os.path.isdir(os.path.join(d, "research")):
             return d
         parent = os.path.dirname(d)
         if parent == d:
-            return os.getcwd()
+            return None
         d = parent
+
+
+def _find_root():
+    # $CAIRN_ROOT wins; then the project the working directory sits in;
+    # then the project THIS FILE sits in, so a copy committed into a repo
+    # works from any directory with no launcher and no environment set.
+    env = os.environ.get("CAIRN_ROOT")
+    if env:
+        return os.path.abspath(env)
+    here = os.path.dirname(os.path.abspath(__file__))
+    return _project_above(os.getcwd()) or _project_above(here) or os.getcwd()
 
 
 REPO = _find_root()
@@ -124,7 +145,7 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 NON_NODE_FILES = {"README.md", "FRONTIER.md"}
 KINDS = ("claim", "route")
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 
 EXIT_OK, EXIT_DUP, EXIT_LEASE, EXIT_INVALID, EXIT_USAGE = 0, 2, 3, 4, 64
 
@@ -392,10 +413,15 @@ def lint_nodes(nodes, errors, repo=REPO):
             if (len(reqs) == 1 and reqs[0] in nodes and isinstance(tgt, str)
                     and tgt in nodes):
                 a, b = nodes[reqs[0]], nodes[tgt]
-                t = _tokens(a.title + " " + a.id.replace("-", " "))
-                u = _tokens(b.title + " " + b.id.replace("-", " "))
-                inter = len(t & u)
-                if t and u and inter >= 3 and inter / min(len(t), len(u)) >= 0.75:
+                t, u = _tokens(a.title), _tokens(b.title)
+                # same wording gates as the duplicate detector, and the same
+                # way to answer once: distinct_from either way settles it
+                answered = (tgt in (a.meta.get("distinct_from") or {})
+                            or reqs[0] in (b.meta.get("distinct_from") or {}))
+                opposite = (_negated(a.title + " " + a.id)
+                            != _negated(b.title + " " + b.id))
+                if (t and u and not answered and not opposite and len(t & u) >= 3
+                        and len(t & u) / len(t | u) >= DUP_LEXICAL):
                     errors.append(("warning", f"{node.relpath}: prerequisite {reqs[0]} "
                                    f"reads like a restatement of target {tgt}; "
                                    "if the route only renames the problem, replace the "
@@ -524,11 +550,43 @@ class Graph:
                       if self.routes[rid].status != "INVALIDATED"])
             for cid in self.claims}
 
-        self.unreachable_open = []
-        for cid, c in self.claims.items():
-            if c.status == "OPEN" and not c.reachable:
-                self.unreachable_open.append(cid)
-                self.errors.append(("warning", f"{c.relpath}: {cid} is open but unreachable from any root claim"))
+        # Unreachable open claims: one warning per node buried the signal in
+        # a 449-claim program — 27 lines, ~19 of them one lane top and its
+        # dependents restated. Two findings hide in there and only one is a
+        # defect, so say each once:
+        #   dead work  every route that needed this claim is invalidated —
+        #              the hole stopped being load-bearing, worth a line each
+        #   detached   a lane nothing consumes yet, plus everything under it.
+        #              True, but it is what an unfinished program looks like:
+        #              one aggregate line, detail in check's hint block.
+        self.unreachable_open, self.dead_work, self.detached_tops = [], [], []
+        for cid in sorted(self.claims):
+            c = self.claims[cid]
+            if c.status != "OPEN" or c.reachable:
+                continue
+            self.unreachable_open.append(cid)
+            consumers = self.required_by.get(cid, [])
+            live = [r for r in consumers
+                    if self.routes[r].status != "INVALIDATED"]
+            if consumers and not live:
+                self.dead_work.append(cid)
+            elif not live:
+                self.detached_tops.append(cid)
+        for cid in self.dead_work:
+            self.errors.append(("warning", f"{self.claims[cid].relpath}: every "
+                                f"route that needs {cid} is invalidated — the "
+                                "hole is no longer load-bearing; retarget it or "
+                                "let it stand as recorded dead space"))
+        detached = [c for c in self.unreachable_open if c not in self.dead_work]
+        if detached:
+            n_below = len(detached) - len(self.detached_tops)
+            self.errors.append((
+                "warning",
+                f"{len(detached)} open claim(s) sit on no live path to a root "
+                f"claim: {len(self.detached_tops)} lane top(s)"
+                + (f" and {n_below} claim(s) below them" if n_below else "")
+                + " — reconnect a top and its lane comes with it "
+                  "(`cairn check` lists them)"))
         self._cycle_check()
 
     def _cycle_check(self):
@@ -552,8 +610,16 @@ class Graph:
         for c in self.claims:
             if color[c] == 0:
                 dfs(c, [c])
-        for c in cyc:
-            self.errors.append(("warning", f"dependency cycle through claims: {' -> '.join(c)}"))
+        seen = set()
+        for path in cyc:
+            ring = set(path)
+            # A <-> B is the kernel's equivalence: two routes, one each way.
+            # Documented, deliberate, and the whole point of having routes be
+            # objects — never a defect. Only longer rings are circular reasoning.
+            if len(ring) < 3 or frozenset(ring) in seen:
+                continue
+            seen.add(frozenset(ring))
+            self.errors.append(("warning", f"dependency cycle through claims: {' -> '.join(path)}"))
 
     def to_json(self):
         out = {"generated_by": "cairn build", "rg": 2, "nodes": {}, "derived": {}}
@@ -641,8 +707,15 @@ def semantic_vectors(claims):
         for t in toks:
             df[t] = df.get(t, 0) + 1
     N = max(1, len(docs))
-    cutoff = 0.35 * N   # program-wide jargon carries no signal
-    return {cid: {t: math.log(N / df[t]) for t in toks if df[t] <= cutoff}
+    # program-wide jargon carries no signal — but on a young graph a
+    # proportional cutoff discards everything (in five claims, any word used
+    # twice is "program-wide"), and two identical claims share every word by
+    # definition, so the floor is what keeps the geometry alive early on.
+    cutoff = max(3.0, 0.35 * N)
+    # smoothed idf: log(N/df) is exactly 0 for a token every document has,
+    # so an unsmoothed weighting gives two identical claims a zero vector
+    # and a cosine of 0 — the one pair it most needs to score 1
+    return {cid: {t: math.log(1 + N / df[t]) for t in toks if df[t] <= cutoff}
             for cid, toks in docs.items()}
 
 
@@ -656,21 +729,72 @@ def cosine(u, v):
     return num / (du * dv) if du and dv else 0.0
 
 
-def duplicate_findings(graph, only_ids=None):
+NEGATIONS = {"not", "non", "never", "fails", "failure", "without", "false",
+             "counterexample", "refuted", "impossible", "obstruction"}
+
+
+def _negated(text):
+    """Does this claim's wording assert a negative? Token overlap cannot
+    see a negation — it is one short word inside a long shared phrase,
+    and it inverts the proposition. `X is MF` and `X is not MF` are the
+    two most similar strings in any graph and the least duplicate."""
+    return bool(NEGATIONS & set(re.findall(r"[a-z0-9]+", text.lower())))
+
+
+# Both gates must fire. Calibrated against a 449-claim program: every
+# false positive there scored below 0.10 on the meaning gate, while the
+# two pairs authors had actually annotated as confusable scored 0.37 and
+# 0.45 — a clean separation with room on both sides.
+DUP_LEXICAL, DUP_MEANING = 0.6, 0.25
+
+HINT_LIMIT = 10  # a wall of hints is read as one hint and then skipped
+
+
+def duplicate_score(a, b, ta, tb, vecs):
+    """How confusable are these two claims? None if not worth asking.
+
+    Wording alone flags whole families. An id is a slug of its own title,
+    so scoring `title + id` double-counts every shared word and lets a
+    family prefix (`literal-mark-quotient-*`) outscore the words that
+    actually differ; and dividing by the SHORTER token set gave a perfect
+    1.0 to any claim whose words were a subset of its sibling's. So:
+    symmetric overlap (Jaccard) on titles alone, then a TF-IDF gate over
+    title+body, where the vocabulary every node in the program shares is
+    discounted away. Sharing a subject is not being the same claim.
+    """
+    if not ta or not tb or len(ta & tb) < 2:
+        return None
+    if len(ta & tb) / len(ta | tb) < DUP_LEXICAL:
+        return None
+    # a negation is one short word inside a long shared phrase, and it
+    # inverts the proposition: `X is MF` and `X is not MF` are the most
+    # similar strings in the graph and the least duplicate
+    if _negated(a.title + " " + a.id) != _negated(b.title + " " + b.id):
+        return None
+    score = cosine(vecs.get(a.id, {}), vecs.get(b.id, {}))
+    return round(score, 2) if score >= DUP_MEANING else None
+
+
+def duplicate_findings(graph, only_ids=None, vecs=None):
     """(claim, candidate, score) triples not answered by distinct_from."""
+    if vecs is None:
+        vecs = semantic_vectors(graph.claims)
+    toks = {cid: _tokens(c.title) for cid, c in graph.claims.items()}
     out = []
     for cid, c in graph.claims.items():
         if only_ids is not None and cid not in only_ids:
             continue
         df = c.meta.get("distinct_from") or {}
-        for score, cand in similar_nodes(c.title + " " + c.id.replace("-", " "),
-                                         graph.claims, kinds=("claim",),
-                                         threshold=0.5, exclude={cid}):
-            if cand.id in df or cid in (cand.meta.get("distinct_from") or {}):
+        for oid, cand in graph.claims.items():
+            if oid == cid:
                 continue
-            if cand.id < cid and (only_ids is None or cand.id in only_ids):
+            if oid in df or cid in (cand.meta.get("distinct_from") or {}):
+                continue
+            if oid < cid and (only_ids is None or oid in only_ids):
                 continue  # report each unordered pair once
-            out.append((cid, cand.id, score))
+            score = duplicate_score(c, cand, toks[cid], toks[oid], vecs)
+            if score is not None:
+                out.append((cid, oid, score))
     return out
 
 
@@ -1875,7 +1999,7 @@ def page(title, body_html):
             f"<style>{SITE_CSS}</style>{KATEX}<body>{nav}{body_html}</body>")
 
 
-INDEX_TMPL = """<!doctype html><meta charset="utf-8">
+INDEX_TMPL = r"""<!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>__TITLE__</title>
 __KATEX__
@@ -3233,16 +3357,21 @@ def cmd_check(args):
                        "the attack is deferred. Writing down where the obvious "
                        "attack fails is where the next one usually comes from"))
     nerr = report_errors(errors, fail_on_warning=args.strict)
-    if graph.unreachable_open:
-        print("to reconnect an unreachable claim: add a route from a reachable "
-              "claim to it, or mark it root: true if it is a genuine program "
+    # Only the lane tops: reconnecting one carries its dependents with it, so
+    # listing the dependents too is the same fix printed several times.
+    if graph.detached_tops:
+        print("to reconnect a lane: add a route from a reachable claim to its "
+              "top, or mark the top root: true if it is a genuine program "
               "target. nearest reachable claims by similarity:", file=sys.stderr)
-        for cid in graph.unreachable_open:
+        for cid in graph.detached_tops[:HINT_LIMIT]:
             near = [m.id for _, m in similar_nodes(
                 graph.claims[cid].title, graph.claims, limit=4, threshold=0.2,
                 exclude={cid}, min_overlap=1) if m.reachable][:2]
             print(f"  {cid}" + (f" ~ {', '.join(near)}" if near else " ~ (none)"),
                   file=sys.stderr)
+        if len(graph.detached_tops) > HINT_LIMIT:
+            print(f"  ... and {len(graph.detached_tops) - HINT_LIMIT} more "
+                  "(`cairn check --json` for all)", file=sys.stderr)
     # momentum, printed while the author's context is still loaded
     delta = kinetic_delta(prev, graph) if prev is not None else None
     n_unlocked = 0
