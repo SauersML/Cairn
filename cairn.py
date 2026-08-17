@@ -1245,9 +1245,7 @@ def generate_frontier_md(graph, locks):
     L += ["", "## Open internal claims (live decompositions exist)", ""]
     L += [f"- {cid} [{graph.claims[cid].title}]({cid}.md)" for cid in graph.internal_open]
     L += ["", "## Recently touched", ""]
-    recent = sorted(graph.nodes.values(), key=lambda n: -os.path.getmtime(n.path))[:8]
-    for n in recent:
-        day = time.strftime("%Y-%m-%d", time.localtime(os.path.getmtime(n.path)))
+    for day, n in recently_touched(graph):
         L.append(f"- {day} · {n.id} [{n.status}] {n.title}")
     L += ["", "## Active claims", ""]
     L += [f"- 🔒 {nid} — {fmt_remaining(lk)}"
@@ -3161,6 +3159,38 @@ def generate_site(graph, locks):
 def _git(*argv):
     return subprocess.run(["git", "-C", REPO] + list(argv),
                           capture_output=True, text=True)
+
+
+def recently_touched(graph, limit=8):
+    """(day, node) newest first — by when each node last changed in HISTORY,
+    not on disk. FRONTIER.md is a committed file and mtime is not committed:
+    a fresh clone stamps every path with the checkout time, so ordering this
+    section by mtime made the generated file disagree with itself on every
+    machine that regenerated it — a diff nobody wrote, in every checkout.
+    An uncommitted edit is the most recent thing there is, so it sorts first.
+    """
+    hist, stamp = {}, None
+    # bounded: the newest-touched nodes live in the newest commits by definition
+    r = _git("log", "-n", "300", "--format=%x01%cI", "--name-only", "--", "research")
+    for line in (r.stdout.splitlines() if r.returncode == 0 else []):
+        if line.startswith("\x01"):
+            stamp = line[1:]
+        elif line and stamp:
+            hist.setdefault(line, stamp)  # git log is newest-first
+
+    def stamp_of(n):
+        if n.relpath in hist:
+            return hist[n.relpath]
+        if r.returncode == 0:
+            return "9999"  # sorts above any ISO timestamp
+        return time.strftime("%Y-%m-%dT%H:%M:%S",
+                             time.localtime(os.path.getmtime(n.path)))
+
+    today = time.strftime("%Y-%m-%d")
+    ordered = sorted(graph.nodes.values(),
+                     key=lambda n: (stamp_of(n), n.id), reverse=True)[:limit]
+    return [(today if stamp_of(n) == "9999" else stamp_of(n)[:10], n)
+            for n in ordered]
 
 
 def changed_research_files():
