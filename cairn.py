@@ -2175,6 +2175,21 @@ svg text{font:10px __MONO__;fill:var(--mut);pointer-events:none;
 paint-order:stroke;stroke:var(--paper);stroke-width:3.5px;stroke-linejoin:round}
 svg text.goalcap{fill:var(--goal);stroke-width:4px}
 .lk{stroke:var(--edge);stroke-width:1.5}
+.lk.in{stroke-width:1.25;opacity:.72}
+.lk.out{stroke:var(--ink);stroke-width:1.9;opacity:.88}
+.foldbox{display:none}
+.compact g.n.foldrep .foldbox{display:block}
+.compact g.n.foldrep circle{display:none}
+.compact g.labels text.foldrep{display:none}
+.foldbox rect{fill:var(--paper);stroke:var(--est);stroke-width:1.5;rx:3}
+.foldbox text{stroke:none;fill:var(--est);font:700 10px __MONO__;
+letter-spacing:.04em;text-anchor:middle}
+.foldbox text.foldsub{fill:var(--mut2);font-size:8.5px;font-weight:400;
+letter-spacing:.02em}
+.compact g.n.foldrep.hot .foldbox rect{stroke-width:2.4}
+button.foldopen{border:1px solid var(--rule);background:var(--paper);color:var(--ink);
+font:11px __MONO__;padding:.5em .7em;cursor:pointer;margin:.7em 0 .2em}
+button.foldopen:hover{border-color:var(--est);color:var(--est)}
 .lk.kill,.lk.dead{stroke:var(--dead);stroke-dasharray:5 3;stroke-width:1.2;
 opacity:.75}
 g.deadbit,line.dead{visibility:hidden}
@@ -2238,6 +2253,7 @@ color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
 <header><span class="stats">__STATS__</span>
 <button id="openSearch">search the graph<kbd>/</kbd></button>
 <label><input type="checkbox" id="showdead" checked> failed routes</label>
+<label title="Fold established interior proof regions; goals and open-work boundaries stay visible"><input type="checkbox" id="compact" checked> compact proven</label>
 <button class="lnk" id="frontierbtn">frontier</button>
 <a href="nodes.html">all nodes</a></header>
 <main><svg id="view"></svg>
@@ -2245,8 +2261,8 @@ color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="7.6" fill="none" stroke="#4f46e5" stroke-width="1.8"/><circle cx="9" cy="8" r="4.6" fill="#fff" stroke="#c08a00" stroke-width="2"/></svg>goal</span>
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="6" fill="#178a5e"/></svg>established</span>
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="6" fill="#fff" stroke="#c08a00" stroke-width="2.2"/></svg>open</span>
-<span><svg width="22" height="16"><rect x="3" y="2" width="12" height="12" fill="#fff" stroke="#171714" stroke-width="1.3"/><path d="M6,10.5 L9,5.5 L12,10.5" fill="none" stroke="#171714" stroke-width="1.6" stroke-linejoin="miter"/></svg>multi-premise route (&and;)</span>
-<span><svg width="27" height="16"><line x1="1" y1="8" x2="20" y2="8" stroke="#17171459" stroke-width="1.5"/><path d="M19,4.5L25,8L19,11.5z" fill="#17171459"/></svg>premises &#10230; target</span>
+<span><svg width="22" height="16"><rect x="3" y="2" width="12" height="12" fill="#fff" stroke="#171714" stroke-width="1.3"/><path d="M6,10.5 L9,5.5 L12,10.5" fill="none" stroke="#171714" stroke-width="1.6" stroke-linejoin="miter"/></svg>all-premises gate (&and;)</span>
+<span><svg width="47" height="16"><line x1="1" y1="4" x2="17" y2="8" stroke="#17171499" stroke-width="1.2"/><path d="M13,5.2L18,8L12.5,9.2" fill="none" stroke="#17171499" stroke-width="1.2"/><rect x="20" y="2" width="12" height="12" fill="#fff" stroke="#171714" stroke-width="1.1"/><path d="M23,10.5L26,5.5L29,10.5" fill="none" stroke="#171714" stroke-width="1.4"/><line x1="32" y1="8" x2="42" y2="8" stroke="#171714" stroke-width="1.8"/><path d="M40,5L46,8L40,11z" fill="#171714"/></svg>premises &#8594; &and; &#8658; target</span>
 <span><svg width="27" height="16"><line x1="1" y1="8" x2="20" y2="8" stroke="#c43c2e" stroke-width="1.3" stroke-dasharray="5,3"/><path d="M19,4.5L25,8L19,11.5z" fill="#c43c2e"/></svg>failed / invalidated</span>
 </div>
 <div id="scrim"></div>
@@ -2304,7 +2320,7 @@ for(const j of DATA.junctions){
  nodes.push(jn);byId[jn.id]=jn;
  for(const q of j.requires)links.push({source:q,target:jn.id,kind:'in',
   route:j.route,title:j.title,dead:j.dead});
- links.push({source:jn.id,target:j.target,kind:'arrow',
+ links.push({source:jn.id,target:j.target,kind:'out',
   route:j.route,title:j.title,dead:j.dead});
 }
 for(const d of DATA.dead){
@@ -2316,6 +2332,49 @@ for(const d of DATA.dead){
  for(const k of d.killers)if(byId[k])links.push({source:k,target:st.id,
   kind:'kill',route:d.route,title:d.title,dead:true});
 }
+// Compact view is presentation only: fold proved INTERIORS, never the boundary
+// of unfinished work. Established claims touching a live open route, goals,
+// roots, frontier claims, and claims that invalidate routes remain explicit.
+const FOLD_MIN=6;
+(function markProvenRegions(){
+ const touch={};
+ for(const r of Object.values(DATA.routes||{})){
+  if(r.dead)continue;
+  const ms=[r.target,...(r.requires||[])].filter(id=>byId[id]&&byId[id].type==='claim');
+  for(const id of ms)(touch[id]=touch[id]||[]).push(r);
+ }
+ const eligible=new Set(DATA.claims.filter(c=>
+  c.status==='ESTABLISHED'&&!c.goal&&!c.root&&!c.frontier&&!(c.kills||[]).length&&
+  (touch[c.id]||[]).every(r=>r.status==='COMPLETE')).map(c=>c.id));
+ const adj={};for(const id of eligible)adj[id]=new Set();
+ for(const r of Object.values(DATA.routes||{})){
+  if(r.dead||r.status!=='COMPLETE')continue;
+  const ms=[r.target,...(r.requires||[])].filter(id=>eligible.has(id));
+  for(let i=1;i<ms.length;i++){adj[ms[0]].add(ms[i]);adj[ms[i]].add(ms[0])}
+ }
+ const seen=new Set();
+ for(const start of eligible){
+  if(seen.has(start))continue;
+  const comp=[],todo=[start];seen.add(start);
+  while(todo.length){
+   const id=todo.pop();comp.push(id);
+   for(const q of adj[id])if(!seen.has(q)){seen.add(q);todo.push(q)}
+  }
+  if(comp.length<FOLD_MIN)continue;
+  comp.sort((a,b)=>{
+   const A=byId[a],B=byId[b],ad=A.depth==null?1e9:A.depth,bd=B.depth==null?1e9:B.depth;
+   return ad-bd||(B.impact||0)-(A.impact||0)||a.localeCompare(b);
+  });
+  const representative=comp[0];
+  for(const id of comp)byId[id].foldRep=representative;
+  byId[representative].foldMembers=comp.slice();
+ }
+ // A conjunction is interior only when every endpoint belongs to one fold.
+ for(const n of nodes)if(n.type==='junction'){
+  const ids=[n.tgt,...(n.requires||[])],reps=ids.map(id=>byId[id]&&byId[id].foldRep);
+  if(reps.length&&reps[0]&&reps.every(x=>x===reps[0]))n.foldRep=reps[0];
+ }
+})();
 for(const a of DATA.affinity)links.push({source:a.a,target:a.b,kind:'aff',w:a.w});
 // hierarchy: goals at depth 0, each claim at its derivation distance;
 // junctions and dead stubs sit mid-band, obstructions beside their kill,
@@ -2330,6 +2389,15 @@ for(const n of nodes)if(n.depth==null)n.depth=maxD+1;
 const GAP=20;   // breathing room between footprints
 const real=l=>l.kind!=='aff';
 const REAL=links.filter(real);
+for(const l of links){l.sid=l.source;l.tid=l.target}
+const compactBox=document.getElementById('compact');
+try{const v=localStorage.getItem('cairnCompactProven');if(v!==null)compactBox.checked=v==='1'}catch(_){}
+let compactMode=compactBox.checked;
+const mappedId=(id,l)=>compactMode&&real(l)&&byId[id]&&byId[id].foldRep?byId[id].foldRep:id;
+function remapLinks(){
+ for(const l of links){l.source=byId[mappedId(l.sid,l)];l.target=byId[mappedId(l.tid,l)]}
+}
+remapLinks();
 const svg=d3.select('#view'),W=svg.node().clientWidth,H=svg.node().clientHeight;
 // The graph is a derivation, so the layout should read as one: an integer
 // layer per node (half-steps for the junctions and stubs that sit between a
@@ -2341,7 +2409,7 @@ const LGAP=105;
 // a pin -- the simulation is free to bend it where the structure demands.
 const bandY=d=>80+d.layer*LGAP;
 nodes.forEach(n=>{n.y=bandY(n);n.x=W/2+(Math.random()-.5)*W*.5});
-svg.append('defs').html('<marker id="m" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#17171459"/></marker><marker id="mr" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#c43c2e"/></marker>');
+svg.append('defs').html('<marker id="m" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#17171459"/></marker><marker id="mi" viewBox="0 0 9 8" refX="8" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M1,1L8,4L1,7" fill="none" stroke="#17171499" stroke-width="1.4"/></marker><marker id="mo" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="8.5" markerHeight="8.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#171714"/></marker><marker id="mr" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#c43c2e"/></marker>');
 const g=svg.append('g');
 const zoom=d3.zoom().scaleExtent([.2,3.5])
  .on('zoom',e=>{g.attr('transform',e.transform)});
@@ -2362,8 +2430,9 @@ function setRects(d){
  // a goal also carries its GOAL caption above the ring, which a title
  // flipped overhead would otherwise land on top of
  const r=[[-rad,-rad,rad,rad]];
+ if(compactMode&&d.foldMembers&&d.foldMembers.length)r.push([-48,-20,48,20]);
  const L=d.lbl;
- if(L){
+ if(L&&!(compactMode&&d.foldMembers&&d.foldMembers.length)){
   const hw=L.w/2+3,t=L.top+L.dy-3;
   r.push([L.dx-hw,t,L.dx+hw,t+L.h+6]);
  }
@@ -2377,12 +2446,13 @@ function rectCollide(){
  function force(alpha){
   const q=d3.quadtree(ns,d=>d.x,d=>d.y),k=alpha*0.9;
   for(const d of ns){
+   if(d.gone)continue;
    q.visit((quad,x0,y0,x1,y1)=>{
     if(!quad.length){
      let n=quad;
      do{
       const o=n.data;
-      if(o&&o!==d&&o.index>d.index){
+      if(o&&!o.gone&&o!==d&&o.index>d.index){
        for(const A of d.rects)for(const B of o.rects){
         const ax1=d.x+A[0]-GAP/2,ay1=d.y+A[1]-GAP/2;
         const ax2=d.x+A[2]+GAP/2,ay2=d.y+A[3]+GAP/2;
@@ -2430,8 +2500,8 @@ const sim=d3.forceSimulation(nodes)
  .force('collide',rectCollide())
  .alphaDecay(.03);
 const line=g.selectAll('line').data(REAL).join('line')
- .attr('class',l=>'lk'+(l.kind==='kill'?' kill':'')+(l.dead?' dead':''))
- .attr('marker-end',l=>l.kind==='in'?null:(l.dead||l.kind==='kill'?'url(#mr)':'url(#m)'))
+ .attr('class',l=>'lk'+(l.kind==='in'?' in':'')+(l.kind==='out'?' out':'')+(l.kind==='kill'?' kill':'')+(l.dead?' dead':''))
+ .attr('marker-end',l=>l.dead||l.kind==='kill'?'url(#mr)':(l.kind==='in'?'url(#mi)':(l.kind==='out'?'url(#mo)':'url(#m)')))
  .style('cursor',l=>l.route?'pointer':null)
  .on('click',(e,l)=>{if(l.route){e.stopPropagation();showRoute(l.route)}});
 line.filter(l=>l.route).append('title').text(l=>l.title||l.route);
@@ -2451,6 +2521,11 @@ node.filter(d=>d.type==='claim').append('circle')
  .attr('fill',d=>d.status==='ESTABLISHED'?'var(--est)':'#fff')
  .attr('stroke',d=>d.status==='ESTABLISHED'?'#0f6b47':'var(--open)')
  .attr('stroke-width',2.2);
+const foldn=node.filter(d=>d.type==='claim'&&d.foldMembers&&d.foldMembers.length);
+const foldbox=foldn.append('g').attr('class','foldbox');
+foldbox.append('rect').attr('x',-48).attr('y',-20).attr('width',96).attr('height',40);
+foldbox.append('text').attr('y',-2).text(d=>`${d.foldMembers.length} proven`);
+foldbox.append('text').attr('class','foldsub').attr('y',11).text('collapsed proof region');
 // no GOAL caption: it is a second label on the same node and always fought
 // the title for the space above the ring.  The double ring and the legend
 // carry the meaning.
@@ -2523,6 +2598,7 @@ const labelLayer=g.append('g').attr('class','labels');
 const claimNodes=nodes.filter(d=>d.type==='claim');
 const lab=labelLayer.selectAll('text').data(claimNodes).join('text')
  .attr('text-anchor','middle')
+ .classed('foldrep',d=>!!(d.foldMembers&&d.foldMembers.length))
  .style('cursor','pointer')
  .on('click',(e,d)=>{e.stopPropagation();selected=d;highlight(d);show(d)})
  .on('mouseenter',(e,d)=>{if(!dragging&&!selected)highlight(d)})
@@ -2638,13 +2714,13 @@ function relabel(){
  const placed=[],discs=[];
  for(const n of nodes){
   if(n.gone||(n.dead&&!sd)||!isFinite(n.x))continue;
-  const r=(n.type==='claim'?(n.goal?23:12):9)+2;
+  const r=(compactMode&&n.foldMembers&&n.foldMembers.length)?50:(n.type==='claim'?(n.goal?23:12):9)+2;
   discs.push([n.x-r,n.y-r,n.x+r,n.y+r,n]);
  }
  for(const o of LBL){
   const d=o.d;
   o.el.classList.remove('hidelabel');
-  if(d.gone||!isFinite(d.x))continue;
+  if(d.gone||!isFinite(d.x)||(compactMode&&d.foldMembers&&d.foldMembers.length))continue;
   const w=o.w+LPAD*2,h=o.h+LPAD*2;
   const x0=d.x-w/2,below=d.y+o.top-LPAD;   // absolute box of the default spot
   const up=(d.y-o.rad-6-o.h-LPAD)-below;   // flip above the disc
@@ -2669,7 +2745,7 @@ function relabel(){
  }
  placeLabels();
 }
-node.append('title').text(d=>d.type==='claim'?`${d.id} [${d.status}]`:(d.rtitle||d.route));
+node.append('title').text(d=>d.foldMembers&&d.foldMembers.length?`${d.foldMembers.length} established claims — click to inspect`:(d.type==='claim'?`${d.id} [${d.status}]`:(d.rtitle||d.route)));
 // Focus: hover previews, a click sticks, clicking the background clears.
 // A route is highlighted whole -- reaching a junction or a stub pulls in its
 // other endpoints, so a multi-premise route never lights up half-drawn.
@@ -2756,7 +2832,7 @@ function afterPanel(){
  pbody.querySelectorAll('a[data-route]').forEach(a=>a.onclick=e=>{
   e.preventDefault();const rid=a.dataset.route;
   const hub=byId['j:'+rid]||byId['x:'+rid];
-  if(hub){selected=hub;highlight(hub)}
+  if(hub){if(compactMode&&hub.foldRep&&hub.id!==hub.foldRep)setCompact(false);selected=hub;highlight(hub)}
   showRoute(rid);pbody.scrollTop=0});
  openPanel();
  if(window.cairnTypeset)cairnTypeset(pbody);
@@ -2817,8 +2893,24 @@ function ctx(d){
  h+=sec('Failed attempts',dead.length,dead.map(r=>routeRow(r)));
  return h;
 }
+function showFold(d){
+ const members=(d.foldMembers||[]).map(id=>claimById[id]).filter(Boolean)
+  .sort((a,b)=>(a.depth==null?1e9:a.depth)-(b.depth==null?1e9:b.depth)||a.title.localeCompare(b.title));
+ let h=`<span class="chip ESTABLISHED">PROVEN REGION</span>
+  <h2>${members.length} established claims</h2>
+  <p class="hint">Solved interior detail is folded here. Claims touching open routes, goals, roots, or invalidations stay outside the block.</p>
+  <button class="foldopen" id="expandfold">expand proven regions</button>
+  <h3 class="sec">Inside<span class="ct">${members.length}</span></h3><ul class="fr ctx">`;
+ for(const c of members.slice(0,40))h+=`<li>${clink(c.id)}</li>`;
+ if(members.length>40)h+=`<li class="hint">…and ${members.length-40} more</li>`;
+ h+='</ul>';
+ pbody.innerHTML=h;afterPanel();
+ const b=document.getElementById('expandfold');
+ if(b)b.onclick=()=>{setCompact(false);selectById(d.id)};
+}
 function show(d){
  if(d.type==='claim'){
+  if(compactMode&&d.foldMembers&&d.foldMembers.length){showFold(d);return}
   pbody.innerHTML=`${d.goal?'<span class="chip goal">GOAL</span> ':''}<span class="chip ${d.status}">${d.status}</span>
    <h2>${esc(d.title)}</h2><code>${d.id}</code>
    ${d.lock?`<p class="hint">claimed (${esc(d.lock)})</p>`:''}
@@ -2832,7 +2924,7 @@ function show(d){
   showRoute(d.route);
  }
 }
-selectById=id=>{const d=byId[id];if(d){selected=d;highlight(d);show(d);pbody.scrollTop=0}};
+selectById=id=>{const d=byId[id];if(d){if(compactMode&&d.foldRep&&d.id!==d.foldRep)setCompact(false);selected=d;highlight(d);show(d);pbody.scrollTop=0}};
 node.on('click',(e,d)=>{e.stopPropagation();selected=d;highlight(d);show(d)});
 svg.on('click',()=>{selected=null;highlight(null);closePanel()});
 function refreshVis(){
@@ -2840,33 +2932,60 @@ function refreshVis(){
  const deg={};
  links.forEach(l=>{if(real(l)&&(!l.dead||sd)){
   const a=l.source.id||l.source,b=l.target.id||l.target;
-  deg[a]=(deg[a]||0)+1;deg[b]=(deg[b]||0)+1}});
+  if(a!==b){deg[a]=(deg[a]||0)+1;deg[b]=(deg[b]||0)+1}
+ }});
  nodes.forEach(d=>{
-  d.orphan=d.type==='claim'&&!d.root&&!d.goal&&!d.frontier&&!(deg[d.id]>0);
-  d.gone=d.orphan;
+  const folded=!!(compactMode&&d.foldRep&&d.id!==d.foldRep);
+  const representative=!!(compactMode&&d.foldMembers&&d.foldMembers.length);
+  d.orphan=!folded&&!representative&&d.type==='claim'&&!d.root&&!d.goal&&!d.frontier&&!(deg[d.id]>0);
+  d.gone=folded||d.orphan;
  });
- node.classed('orphan',d=>d.gone);
+ node.classed('orphan',d=>d.gone).classed('foldrep',d=>!!(d.foldMembers&&d.foldMembers.length));
  lab.classed('orphan',d=>d.gone);
  line.classed('gone',l=>{
-  const a=byId[l.source.id||l.source],b=byId[l.target.id||l.target];
-  return (a&&a.gone)||(b&&b.gone);
+  const ai=l.source.id||l.source,bi=l.target.id||l.target,a=byId[ai],b=byId[bi];
+  return ai===bi||(a&&a.gone)||(b&&b.gone);
  });
- g.classed('showdead',sd);
+ g.classed('showdead',sd).classed('compact',compactMode);
  sim.force('charge',d3.forceManyBody().strength(d=>d.gone?-2:-430));
- linkForce.strength(l=>l.kind==='aff'
-  ?((l.source.gone||l.target.gone)?0:.03+.1*l.w):.5);
+ linkForce.strength(l=>{
+  if(l.source===l.target||l.source.gone||l.target.gone)return 0;
+  return l.kind==='aff'?.03+.1*l.w:.5;
+ });
  sim.alpha(.5).restart();
  relabel();
 }
+function setCompact(on){
+ compactMode=!!on;compactBox.checked=compactMode;
+ try{localStorage.setItem('cairnCompactProven',compactMode?'1':'0')}catch(_){}
+ remapLinks();linkForce.links(links);
+ for(const n of nodes)setRects(n);
+ sim.force('collide',rectCollide());
+ if(compactMode&&selected&&selected.foldRep&&selected.id!==selected.foldRep)
+  selected=byId[selected.foldRep];
+ refreshVis();
+ if(selected){highlight(selected);show(selected)}
+}
 document.getElementById('showdead').onchange=refreshVis;
+compactBox.onchange=()=>setCompact(compactBox.checked);
 function placeLabels(){
  for(const o of LBL)
   o.el.setAttribute('transform',
    'translate('+(o.d.x+o.dx)+','+(o.d.y+o.dy)+')');
 }
+function edgeRadius(n){
+ if(compactMode&&n.foldMembers&&n.foldMembers.length)return 49;
+ if(n.type==='claim')return n.goal?23:10+Math.min((n.impact||0)*1.5,4);
+ return n.type==='junction'?11:8;
+}
+function edgeEnds(l){
+ const a=l.source,b=l.target,dx=b.x-a.x,dy=b.y-a.y,L=Math.hypot(dx,dy)||1;
+ if(a===b)return [a.x,a.y,b.x,b.y];
+ const ra=edgeRadius(a),rb=edgeRadius(b),ux=dx/L,uy=dy/L;
+ return [a.x+ux*ra,a.y+uy*ra,b.x-ux*rb,b.y-uy*rb];
+}
 sim.on('tick',()=>{
- line.attr('x1',l=>l.source.x).attr('y1',l=>l.source.y)
-     .attr('x2',l=>l.target.x).attr('y2',l=>l.target.y);
+ line.each(function(l){const e=edgeEnds(l);this.setAttribute('x1',e[0]);this.setAttribute('y1',e[1]);this.setAttribute('x2',e[2]);this.setAttribute('y2',e[3])});
  node.attr('transform',d=>`translate(${d.x},${d.y})`);
  placeLabels();
  scheduleRelabel();
