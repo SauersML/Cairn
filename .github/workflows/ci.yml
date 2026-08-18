@@ -67,6 +67,10 @@ jobs:
           ../bin/cairn relevant main-conjecture
           ../bin/cairn search --similar "conjecture of the program"
           ../bin/cairn search "key lemma"
+          # a sweep is one call: every probe answered, empties named
+          ../bin/cairn search "key lemma" "no such concept" | grep "no such concept"
+          ../bin/cairn search "key lemma" "no such concept" --json > sweep.json
+          python3 -c 'import json; d=json.load(open("sweep.json")); assert len(d["queries"]) == 2; assert {r["query"] for r in d["results"]} == {"key lemma"}'
           ../bin/cairn site
           test -f .cairn/site/index.html
 

@@ -148,7 +148,7 @@ Read-only over canonical files and deliberately small — twelve commands:
 | `frontier` | open holes **grouped by the goals they serve**, necessity first, with the path each hole unblocks. `--goal <id>`: one cone (works for any claim, not just goals) · `--flat`: ungrouped impact-ranked list |
 | `why <id>` | established → the derivation tree; open → the live decomposition tree, why it matters, and what's waiting on it |
 | `context <id>` | bounded packet for one node: statement, derivation, routes in/out, reusable established claims, nearby failed space (`--budget` tokens) |
-| `search <q>` · `relevant` | lexical search over the graph (`--notes` to include notes/); `--similar` ranks by similarity to an id or text |
+| `search <q>…` · `relevant` | lexical search over the graph, each hit tagged with its **compiled status** (`--notes` to include notes/); pass several queries to sweep them in one pass; `--similar` ranks by similarity to an id or text |
 | `impact <id>` | what would flip if this claim were established |
 | `lock <id> --ttl 45m` | claim a hole (advisory, identity-free); every reply lists the full active-lock roster |
 | `unlock <id>` | release a claim |
@@ -198,6 +198,18 @@ each trace to a real agent session:
   telemetry, so a fresh agent doesn't independently grind the same
   attractive hole. Advisory color only — observability state can never
   affect compiled status.
+- **`search` takes several queries at once**, because that is how the
+  log says agents orient: probes arrive in runs — one program's log has
+  a single agent firing nine searches back to back, each a different
+  concept, each paying its own process start and its own compile. One
+  call now sweeps them all against a corpus tokenized once, and names
+  the probes that came back empty. **One incidental word shared with a
+  long body is not a match**: a multi-word query needs a word in the
+  title/id or two words anywhere, because a search that always answers
+  teaches an agent to stop reading the answer. What keeps the command
+  from being redundant with `grep` over the same files is the
+  `[kind/status]` column: status is computed from the graph, never
+  stored in it, so no text search can report it.
 
 ### Momentum (2.4)
 

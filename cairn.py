@@ -35,9 +35,10 @@ state), frontier (holes grouped by the goals they serve, necessity
 first; --goal for one cone, --flat for the ungrouped list), why
 (derivation if established; decomposition + why-it-matters if open),
 context --budget (statement, derivation, routes, reusable claims, dead
-space in one bounded packet), search [--notes|--similar] (alias:
-relevant = search --similar), impact, lock/unlock (advisory TTL claims —
-identity-free: everyone is one team), site [--serve], telemetry, vendor
+space in one bounded packet), search [--notes|--similar] — several
+queries sweep in one pass (alias: relevant = search --similar), impact,
+lock/unlock (advisory TTL claims — identity-free: everyone is one
+team), site [--serve], telemetry, vendor
 (bootstrap, below). Claims are scheduler state, never committed into
 mathematical history.
 
@@ -60,7 +61,10 @@ claim in it, and `A <=> B` is the kernel's equivalence, never a cycle;
 `frontier` marks holes on EVERY live path to a goal with ★, prints the
 claim-path each hole unblocks, warns when a goal has no route-tree at
 all (that means route-finding, not lemma-proving), and annotates holes
-that resisted prior locked attempts.
+that resisted prior locked attempts; `search` takes SEVERAL queries at
+once because agents orient by probing concept after concept, and it
+answers with each hit's compiled status — the one thing a text search
+of the same files can never report.
 
 MOMENTUM (the tool's job is to make continuing the default, not a
 decision): `check` ends by printing what the change UNLOCKED — new
@@ -220,7 +224,7 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 NON_NODE_FILES = {"README.md", "FRONTIER.md"}
 KINDS = ("claim", "route")
 
-__version__ = "2.7.0"
+__version__ = "2.8.0"
 
 EXIT_OK, EXIT_DUP, EXIT_LEASE, EXIT_INVALID, EXIT_USAGE = 0, 2, 3, 4, 64
 
@@ -3886,51 +3890,114 @@ def cmd_context(args):
                        "node_status": n.status, "packet": packet}, packet)
 
 
-def cmd_search(args):
-    graph, errors = compile_graph()
-    if args.cmd == "relevant" or args.similar:
-        n = graph.nodes.get(args.query)
-        text = (n.title + " " + n.body[:400]) if n else args.query
-        hits = similar_nodes(text, graph.nodes, limit=args.limit, threshold=0.2,
-                             exclude={args.query}, min_overlap=1)
-        payload = {"status": "ok", "results": [
-            {"id": m.id, "kind": m.kind, "node_status": m.status,
-             "title": m.title, "score": s} for s, m in hits]}
-        human = "\n".join(f"{m.id:<44} [{m.kind}/{m.status}] {m.title}"
-                          for _, m in hits) or "(nothing similar)"
-        return emit(args, payload, human)
-    q = _tokens(args.query)
-    scored = []
+def _haystack(graph, with_notes):
+    """Everything searchable, tokenized once: (key, kind, status, title,
+    heading tokens, full tokens).
+
+    A sweep asks several questions of the same corpus, so the corpus is built
+    one time per invocation rather than one time per question.
+    """
+    hay = []
     for n in graph.nodes.values():
-        hay = _tokens(n.title + " " + n.id.replace("-", " ") + " " + n.body)
-        inter = len(q & hay)
-        if inter:
-            scored.append((inter / max(1, len(q)), n.id, n.kind, n.status, n.title))
-    if args.notes and os.path.isdir(NOTES_DIR):
+        head = _tokens(n.title + " " + n.id.replace("-", " "))
+        hay.append((n.id, n.kind, n.status, n.title, head,
+                    head | _tokens(n.body)))
+    if with_notes and os.path.isdir(NOTES_DIR):
         for base, _, files in os.walk(NOTES_DIR):
-            for fn in files:
+            for fn in sorted(files):
                 if not fn.endswith((".md", ".txt")):
                     continue
-                p = os.path.join(base, fn)
+                path = os.path.join(base, fn)
                 try:
-                    hay = _tokens(open(p, encoding="utf-8", errors="ignore").read())
+                    with open(path, encoding="utf-8", errors="ignore") as f:
+                        body = f.read()
                 except OSError:
                     continue
-                inter = len(q & hay)
-                if inter:
-                    scored.append((inter / max(1, len(q)),
-                                   os.path.relpath(p, REPO), "note", "-", fn))
+                head = _tokens(fn.replace("-", " ").replace("_", " "))
+                hay.append((os.path.relpath(path, REPO), "note", "-", fn,
+                            head, head | _tokens(body)))
+    return hay
+
+
+def _hit_rows(hits):
+    return [f"{key:<44} [{kind}/{status}] {title}"
+            for _, key, kind, status, title in hits]
+
+
+def _lexical_hits(query, hay, limit):
+    """Rank by how much of the query landed, and where.
+
+    One incidental word shared with a long body is not a match — on a real
+    graph that alone returns a page of unrelated claims for a query about
+    nothing, and a search that always answers teaches an agent to stop
+    reading the answer. So a multi-word query needs either a word in the
+    title/id or two words anywhere, and a title match outweighs a body one.
+    """
+    q = _tokens(query)
+    if not q:
+        return []
+    scored = []
+    for key, kind, status, title, head, full in hay:
+        inhead, infull = len(q & head), len(q & full)
+        if not infull:
+            continue
+        if len(q) > 1 and not inhead and infull < 2:
+            continue
+        scored.append(((inhead + infull) / (2 * len(q)), key, kind, status, title))
     scored.sort(key=lambda x: (-x[0], x[1]))
-    top = scored[:args.limit]
-    payload = {"status": "ok", "results": [
-        {"id": i, "kind": k, "node_status": st, "title": t, "score": round(sc, 2)}
-        for sc, i, k, st, t in top]}
-    human = "\n".join(f"{i:<44} [{k}/{st}] {t}" for _, i, k, st, t in top) or "(no matches)"
+    return scored[:limit]
+
+
+def cmd_search(args):
+    graph, errors = compile_graph()
+    report_errors(errors, brief=True)
+    similar = args.cmd == "relevant" or args.similar
+    # Recorded usage: agents probe several concepts back to back — runs of up
+    # to nine consecutive searches from one agent — because one question per
+    # invocation is all the CLI offered. A sweep is one call now: one compile,
+    # one pass over notes/, and one answer that says which probes found
+    # nothing. What `grep` cannot do, and the reason this command exists, is
+    # the [kind/status] column: status is compiled, never stored.
+    queries = list(dict.fromkeys(args.query))
+    hay = None if similar else _haystack(graph, args.notes)
+    groups = []
+    for query in queries:
+        if similar:
+            n = graph.nodes.get(query)
+            text = (n.title + " " + n.body[:400]) if n else query
+            hits = [(score, m.id, m.kind, m.status, m.title) for score, m in
+                    similar_nodes(text, graph.nodes, limit=args.limit,
+                                  threshold=0.2, exclude={query}, min_overlap=1)]
+        else:
+            hits = _lexical_hits(query, hay, args.limit)
+        groups.append((query, hits))
+
+    empty = "(nothing similar)" if similar else "(no matches)"
+    if len(groups) == 1:
+        human = "\n".join(_hit_rows(groups[0][1])) or empty
+    else:
+        blank = [query for query, hits in groups if not hits]
+        total = sum(len(h) for _, h in groups)
+        head = f"{len(groups)} probes · {total} hit{'' if total == 1 else 's'}"
+        if blank:
+            head += " · nothing for: " + ", ".join(blank)
+        L = [head]
+        for query, hits in groups:
+            L.append(f"── {query}")
+            L += ["  " + r for r in _hit_rows(hits)] or ["  " + empty]
+        human = "\n".join(L)
+
+    payload = {"status": "ok", "queries": queries, "results": [
+        {"query": query, "id": key, "kind": kind, "node_status": status,
+         "title": title, "score": round(score, 2)}
+        for query, hits in groups
+        for score, key, kind, status, title in hits]}
     return emit(args, payload, human)
 
 
 def cmd_impact(args):
     graph, errors = compile_graph()
+    report_errors(errors, brief=True)
     n = graph.nodes.get(args.id)
     if n is None:
         unknown_node(graph, args.id)
@@ -4283,10 +4350,12 @@ def main():
     cx = add("context", "bounded context packet (statement, derivation, routes, "
              "reusable claims, dead space)", node_id=True)
     cx.add_argument("--budget", type=int, default=8000, help="approx token budget")
-    se = add("search", "lexical search over the graph (and notes/); "
+    se = add("search", "lexical search over the graph (and notes/), reporting "
+             "each hit's compiled status; several queries sweep in one pass; "
              "--similar ranks by similarity to a node id or free text",
              aliases=("relevant",))
-    se.add_argument("query")
+    se.add_argument("query", nargs="+",
+                    help="one or more quoted queries; each is probed separately")
     se.add_argument("--limit", type=int, default=10)
     se.add_argument("--notes", action="store_true")
     se.add_argument("--similar", action="store_true",
