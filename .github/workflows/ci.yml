@@ -9,7 +9,50 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
+  apply-ui-patch:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'ui/graph-route-clarity' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ui/graph-route-clarity
+          fetch-depth: 0
+      - name: Apply and syntax-check the UI patch
+        run: |
+          python3 tools/apply_graph_ui_patch.py
+          python3 -m py_compile cairn.py
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          import cairn
+          html = (cairn.INDEX_TMPL.replace('__KATEX__','').replace('__PALETTE__','')
+                  .replace('__SANS__','sans-serif').replace('__MONO__','monospace')
+                  .replace('__SEARCH_JS__','').replace('__DATA__','{}')
+                  .replace('__STATS__','').replace('__TITLE__','Cairn'))
+          assert 'id="compact" checked' in html
+          assert 'marker id="mi"' in html and 'marker id="mo"' in html
+          assert 'premises &#8594; &and; &#8658; target' in html
+          assert 'collapsed proof region' in html
+          scripts = re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>', html, re.S)
+          Path('/tmp/cairn-site.js').write_text('\n'.join(scripts))
+          PY
+          node --check /tmp/cairn-site.js
+      - name: Commit the source-only result
+        run: |
+          git fetch origin main
+          git checkout origin/main -- .github/workflows/ci.yml
+          git rm .github/workflows/apply-graph-ui-patch.yml tools/apply_graph_ui_patch.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add cairn.py .github/workflows/ci.yml
+          git commit -m "Improve graph route direction and compact proven regions"
+          git push origin HEAD:ui/graph-route-clarity
+
   check:
     name: Compile a scaffolded project
     runs-on: ubuntu-latest
