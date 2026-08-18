@@ -96,8 +96,8 @@ rep("  for(const d of ns){\n   q.visit((quad,x0,y0,x1,y1)=>{\n",
 rep("      if(o&&o!==d&&o.index>d.index){\n",
     "      if(o&&!o.gone&&o!==d&&o.index>d.index){\n")
 
-rep("  .attr('class',l=>'lk'+(l.kind==='kill'?' kill':'')+(l.dead?' dead':''))\n  .attr('marker-end',l=>l.kind==='in'?null:(l.dead||l.kind==='kill'?'url(#mr)':'url(#m)'))\n",
-    "  .attr('class',l=>'lk'+(l.kind==='in'?' in':'')+(l.kind==='out'?' out':'')+(l.kind==='kill'?' kill':'')+(l.dead?' dead':''))\n  .attr('marker-end',l=>l.dead||l.kind==='kill'?'url(#mr)':(l.kind==='in'?'url(#mi)':(l.kind==='out'?'url(#mo)':'url(#m)')))\n")
+rep(" .attr('class',l=>'lk'+(l.kind==='kill'?' kill':'')+(l.dead?' dead':''))\n .attr('marker-end',l=>l.kind==='in'?null:(l.dead||l.kind==='kill'?'url(#mr)':'url(#m)'))\n",
+    " .attr('class',l=>'lk'+(l.kind==='in'?' in':'')+(l.kind==='out'?' out':'')+(l.kind==='kill'?' kill':'')+(l.dead?' dead':''))\n .attr('marker-end',l=>l.dead||l.kind==='kill'?'url(#mr)':(l.kind==='in'?'url(#mi)':(l.kind==='out'?'url(#mo)':'url(#m)')))\n")
 
 rep("node.filter(d=>d.type==='claim').append('circle')\n .attr('r',d=>d.goal?15:10+Math.min(d.impact*1.5,4))\n .attr('fill',d=>d.status==='ESTABLISHED'?'var(--est)':'#fff')\n .attr('stroke',d=>d.status==='ESTABLISHED'?'#0f6b47':'var(--open)')\n .attr('stroke-width',2.2);\n",
     "node.filter(d=>d.type==='claim').append('circle')\n .attr('r',d=>d.goal?15:10+Math.min(d.impact*1.5,4))\n .attr('fill',d=>d.status==='ESTABLISHED'?'var(--est)':'#fff')\n .attr('stroke',d=>d.status==='ESTABLISHED'?'#0f6b47':'var(--open)')\n .attr('stroke-width',2.2);\n"
