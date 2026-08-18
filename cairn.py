@@ -220,7 +220,7 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 NON_NODE_FILES = {"README.md", "FRONTIER.md"}
 KINDS = ("claim", "route")
 
-__version__ = "2.6.0"
+__version__ = "2.7.0"
 
 EXIT_OK, EXIT_DUP, EXIT_LEASE, EXIT_INVALID, EXIT_USAGE = 0, 2, 3, 4, 64
 
@@ -2169,12 +2169,18 @@ text-transform:uppercase;padding:.15em .5em;border:1px solid var(--line)}
 .mk.open{color:var(--open);border-color:#c08a0055}
 .mk.dead{color:var(--dead);border-color:#c43c2e55}
 .hint{color:var(--mut);font-size:12px}
+.flow{font:11px __MONO__;color:var(--mut);letter-spacing:.02em;margin:.5em 0 0}
+.flow b{color:var(--ink);font-weight:700}
 details summary{cursor:pointer;font-size:10px;font-weight:700;letter-spacing:.16em;
 text-transform:uppercase;margin:1.9em 0 .4em;color:var(--mut2)}
 svg text{font:10px __MONO__;fill:var(--mut);pointer-events:none;
 paint-order:stroke;stroke:var(--paper);stroke-width:3.5px;stroke-linejoin:round}
 svg text.goalcap{fill:var(--goal);stroke-width:4px}
 .lk{stroke:var(--edge);stroke-width:1.5}
+/* Direction is drawn, not inferred: a premise arrives thin with a hollow
+   head, the one edge OUT of a route leaves heavy with a solid one. */
+.lk.in:not(.dead){stroke-width:1.1}
+.lk.out:not(.dead){stroke-width:2.1;stroke:#171714a8}
 .lk.kill,.lk.dead{stroke:var(--dead);stroke-dasharray:5 3;stroke-width:1.2;
 opacity:.75}
 g.deadbit,line.dead{visibility:hidden}
@@ -2238,6 +2244,7 @@ color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
 <header><span class="stats">__STATS__</span>
 <button id="openSearch">search the graph<kbd>/</kbd></button>
 <label><input type="checkbox" id="showdead" checked> failed routes</label>
+<label id="foldbox"><input type="checkbox" id="fold"> fold proven</label>
 <button class="lnk" id="frontierbtn">frontier</button>
 <a href="nodes.html">all nodes</a></header>
 <main><svg id="view"></svg>
@@ -2245,8 +2252,10 @@ color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="7.6" fill="none" stroke="#4f46e5" stroke-width="1.8"/><circle cx="9" cy="8" r="4.6" fill="#fff" stroke="#c08a00" stroke-width="2"/></svg>goal</span>
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="6" fill="#178a5e"/></svg>established</span>
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="6" fill="#fff" stroke="#c08a00" stroke-width="2.2"/></svg>open</span>
-<span><svg width="22" height="16"><rect x="3" y="2" width="12" height="12" fill="#fff" stroke="#171714" stroke-width="1.3"/><path d="M6,10.5 L9,5.5 L12,10.5" fill="none" stroke="#171714" stroke-width="1.6" stroke-linejoin="miter"/></svg>multi-premise route (&and;)</span>
-<span><svg width="27" height="16"><line x1="1" y1="8" x2="20" y2="8" stroke="#17171459" stroke-width="1.5"/><path d="M19,4.5L25,8L19,11.5z" fill="#17171459"/></svg>premises &#10230; target</span>
+<span><svg width="24" height="16"><path d="M2.5,2.5 L8,2.5 L13.5,8 L8,13.5 L2.5,13.5 Z" fill="#fff" stroke="#171714" stroke-width="1.3" stroke-linejoin="round"/><path d="M4.4,10.4 L6.6,6.2 L8.8,10.4" fill="none" stroke="#171714" stroke-width="1.5" stroke-linejoin="miter"/></svg>&and; gate &mdash; nose points at what it proves</span>
+<span><svg width="30" height="16"><line x1="1" y1="8" x2="21" y2="8" stroke="#17171459" stroke-width="1.1"/><path d="M20.6,4.9L26,8L20.6,11.1z" fill="#fff" stroke="#171714a8" stroke-width="1.1"/></svg>premise &#8594; gate (input)</span>
+<span><svg width="30" height="16"><line x1="1" y1="8" x2="20" y2="8" stroke="#171714a8" stroke-width="2.1"/><path d="M19,3.9L27,8L19,12.1z" fill="#171714a8"/></svg>gate &#8594; claim (output)</span>
+<span><svg width="30" height="16"><rect x="2" y="3.5" width="25" height="9" rx="3" fill="#178a5e1f" stroke="#178a5e" stroke-width="1.5"/></svg>folded proven region</span>
 <span><svg width="27" height="16"><line x1="1" y1="8" x2="20" y2="8" stroke="#c43c2e" stroke-width="1.3" stroke-dasharray="5,3"/><path d="M19,4.5L25,8L19,11.5z" fill="#c43c2e"/></svg>failed / invalidated</span>
 </div>
 <div id="scrim"></div>
@@ -2304,7 +2313,7 @@ for(const j of DATA.junctions){
  nodes.push(jn);byId[jn.id]=jn;
  for(const q of j.requires)links.push({source:q,target:jn.id,kind:'in',
   route:j.route,title:j.title,dead:j.dead});
- links.push({source:jn.id,target:j.target,kind:'arrow',
+ links.push({source:jn.id,target:j.target,kind:'arrow',out:true,
   route:j.route,title:j.title,dead:j.dead});
 }
 for(const d of DATA.dead){
@@ -2317,6 +2326,78 @@ for(const d of DATA.dead){
   kind:'kill',route:d.route,title:d.title,dead:true});
 }
 for(const a of DATA.affinity)links.push({source:a.a,target:a.b,kind:'aff',w:a.w});
+// ---- proven regions -------------------------------------------------------
+// Most of a working graph is settled interior, and none of it is a decision:
+// it is the part you have already finished, drawn at the same weight as the
+// part you have not.  A region FOLDS when it is a connected block of
+// established claims that nothing live still reads from.  Four kinds of
+// claim stay explicit however proved they are, because they are what a
+// reader navigates by: goals, roots, the obstructions that killed a route,
+// and the established claims a live route into an OPEN target requires --
+// the supply layer of the frontier.  Folding is a view.  It touches no
+// status, no route and no file; one click puts a region back.
+const MINFOLD=5;
+const killerIds=new Set();
+for(const d of DATA.dead)for(const k of d.killers||[])killerIds.add(k);
+const supplies=new Set();
+const allRoutes=DATA.junctions.concat(
+ DATA.links.map(l=>({route:l.route,target:l.target,dead:l.dead,requires:[l.source]})));
+for(const r of allRoutes){
+ if(r.dead)continue;
+ const t=byId[r.target];
+ if(t&&t.status==='ESTABLISHED')continue;
+ for(const q of r.requires)supplies.add(q);
+}
+const explicit=c=>c.goal||c.root||killerIds.has(c.id)||supplies.has(c.id);
+// union-find over every established claim, along the routes that are proved
+// end to end: this is the shape of the settled part
+const uf={};
+for(const c of DATA.claims)if(c.status==='ESTABLISHED')uf[c.id]=c.id;
+const find=x=>{while(uf[x]!==x)x=uf[x]=uf[uf[x]];return x};
+for(const r of allRoutes){
+ if(r.dead||uf[r.target]===undefined)continue;
+ if(!r.requires.every(q=>uf[q]!==undefined))continue;
+ for(const q of r.requires){const a=find(q),b=find(r.target);if(a!==b)uf[a]=b}
+}
+const bucket={},groups=[];
+for(const id in uf){const k=find(id);(bucket[k]=bucket[k]||[]).push(id)}
+for(const k in bucket){
+ const mem=bucket[k].filter(id=>!explicit(byId[id]));
+ if(mem.length<MINFOLD)continue;
+ const gid='region:'+(groups.length+1);
+ let ds=0,dn=0;
+ for(const m of mem){const dp=byId[m].depth;if(dp!=null){ds+=dp;dn++}}
+ const gn={id:gid,type:'group',n:mem.length,open:false,
+  gw:44+Math.min(18,Math.round(mem.length/7)),gh:15,
+  members:mem.slice().sort((a,b)=>byId[a].title.localeCompare(byId[b].title)),
+  depth:dn?ds/dn:null};
+ for(const m of mem)byId[m].region=gid;
+ groups.push(gn);nodes.push(gn);byId[gid]=gn;
+}
+// a gate is inside a region only when the whole route it carries is
+for(const n of nodes)if(n.type==='junction'&&!n.dead){
+ const t=byId[n.tgt];
+ if(t&&t.region&&n.requires.every(q=>byId[q]&&byId[q].region===t.region))
+  n.region=t.region;
+}
+// Every relation that CROSSES a fold is kept and re-pointed at the block, so
+// a folded region still shows what it feeds and what feeds it.  A proxy that
+// merges several relations carries no route id: it would have to pick one.
+const rgOf=id=>{const n=byId[id];return n&&n.region?n.region:null};
+const px={};
+for(const l of links){
+ if(l.kind==='aff')continue;
+ const ra=rgOf(l.source),rb=rgOf(l.target);
+ if((!ra&&!rb)||(ra&&ra===rb))continue;
+ const s=ra||l.source,t=rb||l.target;
+ const key=s+'|'+t+'|'+l.kind+(l.dead?'|x':'');
+ if(px[key]){px[key].n++;continue}
+ px[key]={source:s,target:t,kind:l.kind,dead:l.dead,route:l.route,
+  title:l.title,out:l.out,proxy:true,n:1};
+}
+for(const key in px){const e=px[key];
+ if(e.n>1){e.route=null;e.title=e.n+' relations'}
+ links.push(e)}
 // hierarchy: goals at depth 0, each claim at its derivation distance;
 // junctions and dead stubs sit mid-band, obstructions beside their kill,
 // anything unreachable parks in the bottom band
@@ -2341,7 +2422,11 @@ const LGAP=105;
 // a pin -- the simulation is free to bend it where the structure demands.
 const bandY=d=>80+d.layer*LGAP;
 nodes.forEach(n=>{n.y=bandY(n);n.x=W/2+(Math.random()-.5)*W*.5});
-svg.append('defs').html('<marker id="m" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#17171459"/></marker><marker id="mr" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0L8,4L0,8z" fill="#c43c2e"/></marker>');
+// Three heads, and the difference between them IS the direction: an input
+// is hollow and small, an output is solid and full size, a failure is red.
+// Before this, inputs had no head at all and the reader was asked to read
+// direction off an absence.
+svg.append('defs').html('<marker id="m" viewBox="0 0 8 8" refX="7.6" refY="4" markerWidth="8.5" markerHeight="8.5" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0L8,4L0,8z" fill="#171714a8"/></marker><marker id="mi" viewBox="0 0 8 8" refX="7.4" refY="4" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto"><path d="M0.7,0.9L7.4,4L0.7,7.1z" fill="#fff" stroke="#171714a8" stroke-width="1.2" stroke-linejoin="round"/></marker><marker id="mr" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="8.5" markerHeight="8.5" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0L8,4L0,8z" fill="#c43c2e"/></marker>');
 const g=svg.append('g');
 const zoom=d3.zoom().scaleExtent([.2,3.5])
  .on('zoom',e=>{g.attr('transform',e.transform)});
@@ -2358,6 +2443,10 @@ svg.call(zoom).on('dblclick.zoom',null);
 // least penetration.  A circular collide cannot see a title at all, which is
 // why text kept colliding however cleverly it was placed.
 function setRects(d){
+ if(d.type==='group'){
+  d.rects=[[-d.gw-5,-d.gh-5,d.gw+5,d.gh+5]];
+  d.mx=d.gw+5+GAP;d.my=d.gh+5+GAP;return;
+ }
  const rad=(d.type==='claim'?(d.goal?23:12):(d.type==='junction'?11:8))+3;
  // a goal also carries its GOAL caption above the ring, which a title
  // flipped overhead would otherwise land on top of
@@ -2382,7 +2471,9 @@ function rectCollide(){
      let n=quad;
      do{
       const o=n.data;
-      if(o&&o!==d&&o.index>d.index){
+      // a hidden node has no footprint: folded interiors must not go on
+      // shoving the graph around from behind display:none
+      if(o&&o!==d&&o.index>d.index&&!d.gone&&!o.gone){
        for(const A of d.rects)for(const B of o.rects){
         const ax1=d.x+A[0]-GAP/2,ay1=d.y+A[1]-GAP/2;
         const ax2=d.x+A[2]+GAP/2,ay2=d.y+A[3]+GAP/2;
@@ -2430,8 +2521,10 @@ const sim=d3.forceSimulation(nodes)
  .force('collide',rectCollide())
  .alphaDecay(.03);
 const line=g.selectAll('line').data(REAL).join('line')
- .attr('class',l=>'lk'+(l.kind==='kill'?' kill':'')+(l.dead?' dead':''))
- .attr('marker-end',l=>l.kind==='in'?null:(l.dead||l.kind==='kill'?'url(#mr)':'url(#m)'))
+ .attr('class',l=>'lk'+(l.kind==='kill'?' kill':'')+(l.dead?' dead':'')
+  +(l.kind==='in'?' in':l.out?' out':''))
+ .attr('marker-end',l=>(l.dead||l.kind==='kill')?'url(#mr)'
+  :l.kind==='in'?'url(#mi)':'url(#m)')
  .style('cursor',l=>l.route?'pointer':null)
  .on('click',(e,l)=>{if(l.route){e.stopPropagation();showRoute(l.route)}});
 line.filter(l=>l.route).append('title').text(l=>l.title||l.route);
@@ -2459,11 +2552,18 @@ node.filter(d=>d.type==='claim').append('circle')
 // 9px text glyph -- as text it inherited the label halo, a paper-coloured
 // stroke around a tiny character, i.e. a blob at any zoom.
 const jn=node.filter(d=>d.type==='junction');
-jn.append('rect')
- .attr('x',-9).attr('y',-9).attr('width',18).attr('height',18)
+// The gate is a DIRECTIONAL glyph.  A square says nothing about which way a
+// route fires, so the shell is a D: premises land on the flat back, and the
+// nose is aimed, every tick, at the claim the route would establish.  You
+// can read the direction off the shape before you look for an arrowhead.
+const gate=jn.append('g').attr('class','gate');
+gate.append('path')
+ .attr('d','M-8.5,-8.5 L0.5,-8.5 L10,0 L0.5,8.5 L-8.5,8.5 Z')
  .attr('fill','var(--paper)')
  .attr('stroke',d=>d.dead?'var(--dead)':'var(--ink)')
- .attr('stroke-width',1.6).attr('shape-rendering','crispEdges');
+ .attr('stroke-width',1.6).attr('stroke-linejoin','round');
+// the conjunction sign stays UPRIGHT in the node group -- rotated with the
+// shell it stops reading as a sign and becomes a stray tick
 jn.append('path')
  .attr('d','M-4.4,3.2 L0,-4 L4.4,3.2')
  .attr('fill','none')
@@ -2475,6 +2575,46 @@ jn.append('path')
 node.filter(d=>d.type==='stub').append('circle')
  .attr('r',6.5).attr('fill','#fff').attr('stroke','var(--dead)')
  .attr('stroke-width',1.7).attr('stroke-dasharray','3 2');
+// A folded region is one block carrying one number, because the whole point
+// of the block is that there is nothing left to decide inside it.
+const grp=node.filter(d=>d.type==='group');
+grp.append('rect')
+ .attr('x',d=>-d.gw).attr('y',d=>-d.gh)
+ .attr('width',d=>d.gw*2).attr('height',d=>d.gh*2).attr('rx',7)
+ .attr('fill','#178a5e1f').attr('stroke','var(--est)').attr('stroke-width',1.8);
+grp.append('text')
+ .attr('text-anchor','middle').attr('y',4.5)
+ .attr('font-size',12).attr('fill','#0f6b47').attr('font-weight',700)
+ .attr('pointer-events','none')
+ .text(d=>'\u2713 '+d.n+' proven');
+// Where an edge STOPS is half of what makes it directional: every line is
+// cut back to the outline of the shape it points at, so the head lands on
+// paper instead of under a disc that is drawn over it.
+const shapeR=d=>d.type==='claim'?(d.goal?24:11+Math.min(d.impact*1.5,4))
+ :d.type==='junction'?10.5:7.5;
+function edgeOff(d,dx,dy){
+ if(d.type!=='group')return shapeR(d);
+ const ax=Math.abs(dx),ay=Math.abs(dy);
+ return Math.min(ax>1e-6?(d.gw+2)/ax:1e9,ay>1e-6?(d.gh+2)/ay:1e9);
+}
+function trimEdge(l){
+ const s=l.source,t=l.target;
+ let dx=t.x-s.x,dy=t.y-s.y;
+ const len=Math.hypot(dx,dy)||1;dx/=len;dy/=len;
+ // the head is what carries the direction, so a crowded short edge gives up
+ // its tail and keeps its head on the outline it points at
+ let b=edgeOff(t,dx,dy)+(l.kind==='in'?2:1);
+ if(b>len-1)b=Math.max(0,len-1);
+ let a=edgeOff(s,dx,dy)+1;
+ if(a>len-1-b)a=Math.max(0,len-1-b);
+ l.ex1=s.x+dx*a;l.ey1=s.y+dy*a;
+ l.ex2=t.x-dx*b;l.ey2=t.y-dy*b;
+}
+const gateAim=d=>{
+ const t=byId[d.tgt];
+ if(!t||!isFinite(t.x))return null;
+ return 'rotate('+(Math.atan2(t.y-d.y,t.x-d.x)*180/Math.PI).toFixed(1)+')';
+};
 // Labels are the real estate that runs out first, so they are placed by
 // priority and any that would collide with one already placed is dropped:
 // the graph stays readable at every zoom instead of turning into a hedge.
@@ -2532,10 +2672,10 @@ lab.each(function(d){
  const lines=title?wrapTitle(title):[''];
  const txt=d3.select(this);
  lines.forEach((ln,i)=>txt.append('tspan').attr('x',0)
-  .attr('dy',i?11:(d.goal?36:27)).text(ln));
+  .attr('dy',i?11:(d.goal?40:31)).text(ln));
  const rad=d.goal?23:(10+Math.min(d.impact*1.5,4));
  const w=Math.max.apply(null,lines.map(l=>l.length))*5.9+8;
- const h=lines.length*11+4,top=d.goal?28:19;
+ const h=lines.length*11+4,top=d.goal?32:23;
  // the node's real footprint, disc plus title, is what the layout must keep
  // apart -- separating circles alone is what let the text collide
  const rec={d:d,el:this,dx:0,dy:0,rad:rad,w:w,h:h,top:top};
@@ -2669,7 +2809,10 @@ function relabel(){
  }
  placeLabels();
 }
-node.append('title').text(d=>d.type==='claim'?`${d.id} [${d.status}]`:(d.rtitle||d.route));
+node.append('title').text(d=>d.type==='claim'?`${d.id} [${d.status}]`
+ :d.type==='group'?`${d.n} established claims — folded`
+ :d.type==='junction'?`${d.rtitle||d.route} — ${d.requires.length} inputs, 1 output`
+ :(d.rtitle||d.route));
 // Focus: hover previews, a click sticks, clicking the background clears.
 // A route is highlighted whole -- reaching a junction or a stub pulls in its
 // other endpoints, so a multi-premise route never lights up half-drawn.
@@ -2731,15 +2874,19 @@ function showRoute(rid){
  const r=(DATA.routes||{})[rid];
  if(!r){location.href=rid+'.html';return}
  const blocked=new Set(r.blocked||[]);
+ const nq=(r.requires||[]).length;
  let h=`<span class="chip route">route${r.dead?' &middot; failed':''}</span>
   <h2>${esc(r.title||rid)}</h2><code>${esc(rid)}</code>`;
- h+=`<h3 class="sec">Would establish</h3><ul class="fr ctx"><li>${clink(r.target)}</li></ul>`;
- h+='<h3 class="sec">Needs</h3><ul class="fr ctx">';
- if(!(r.requires||[]).length)
+ // the panel says the same thing the glyph does: what goes in, what comes out
+ h+=`<p class="flow">${nq>1?`${nq} inputs &#8594; <b>AND</b> &#8594; 1 output`
+  :nq===1?'1 input &#8594; 1 output':'no input (direct proof) &#8594; 1 output'}</p>`;
+ h+='<h3 class="sec">Inputs &mdash; all of them required</h3><ul class="fr ctx">';
+ if(!nq)
   h+='<li><span class="mk ok">nothing</span> a complete direct proof</li>';
  else for(const q of r.requires)
   h+=`<li>${blocked.has(q)?'<span class="mk open">open</span>':'<span class="mk ok">have it</span>'} ${clink(q)}</li>`;
  h+='</ul>';
+ h+=`<h3 class="sec">Output &mdash; would establish</h3><ul class="fr ctx"><li>${clink(r.target)}</li></ul>`;
  if(r.dead&&(r.killers||[]).length){
   h+='<h3 class="sec">Why it failed</h3><ul class="fr ctx">';
   for(const k of r.killers)h+=`<li><span class="mk dead">ruled out by</span> ${clink(k)}</li>`;
@@ -2817,7 +2964,40 @@ function ctx(d){
  h+=sec('Failed attempts',dead.length,dead.map(r=>routeRow(r)));
  return h;
 }
+function showRegion(gn){
+ pbody.innerHTML=`<span class="chip ESTABLISHED">${gn.open?'EXPANDED':'FOLDED'}</span>
+  <h2>${gn.n} established claims</h2>
+  <p class="hint">${gn.open
+   ?'Back on the canvas as ' +gn.n+' separate claims.'
+   :'A settled interior &mdash; every claim in here is proved, and no open route reads from one of them directly.'}
+  Nothing about the graph changed: folding is a way of looking at it.</p>
+  <p>${gn.open?`<a href="#" data-fold="${gn.id}">fold it back &#8594;</a>`
+              :`<a href="#" data-expand="${gn.id}">expand this region &#8594;</a>`}</p>
+  <h3 class="sec">Contains</h3><ul class="fr">`
+  +gn.members.map(m=>`<li data-id="${m}">${esc(byId[m].title)}<br><span class="imp">${m}</span></li>`).join('')
+  +'</ul>';
+ afterPanel();
+ pbody.querySelectorAll('li[data-id]').forEach(li=>
+  li.onclick=()=>selectById(li.dataset.id));
+ pbody.querySelectorAll('a[data-expand]').forEach(a=>a.onclick=e=>{
+  e.preventDefault();expandRegion(a.dataset.expand);showRegion(byId[a.dataset.expand])});
+ pbody.querySelectorAll('a[data-fold]').forEach(a=>a.onclick=e=>{
+  e.preventDefault();foldRegion(a.dataset.fold);showRegion(byId[a.dataset.fold])});
+ openPanel();
+}
+// Expanding removes the very node the focus was built around, so the focus
+// goes with it -- otherwise the graph stays dimmed around nothing.
+function setOpen(gid,v){
+ const gn=byId[gid];
+ if(!gn||gn.open===v)return;
+ gn.open=v;
+ if(selected&&(selected===gn||selected.region===gid)){selected=null;highlight(null)}
+ refreshVis();sim.alpha(.45).restart();
+}
+function expandRegion(gid){setOpen(gid,true)}
+function foldRegion(gid){setOpen(gid,false)}
 function show(d){
+ if(d.type==='group'){showRegion(d);return}
  if(d.type==='claim'){
   pbody.innerHTML=`${d.goal?'<span class="chip goal">GOAL</span> ':''}<span class="chip ${d.status}">${d.status}</span>
    <h2>${esc(d.title)}</h2><code>${d.id}</code>
@@ -2832,18 +3012,42 @@ function show(d){
   showRoute(d.route);
  }
 }
-selectById=id=>{const d=byId[id];if(d){selected=d;highlight(d);show(d);pbody.scrollTop=0}};
+// Navigating to a folded claim opens its region first: a search result that
+// selects a node you cannot see is worse than no result.
+selectById=id=>{const d=byId[id];if(!d)return;
+ if(d.region&&byId[d.region]&&!byId[d.region].open&&foldBox.checked)
+  expandRegion(d.region);
+ selected=d;highlight(d);show(d);pbody.scrollTop=0};
 node.on('click',(e,d)=>{e.stopPropagation();selected=d;highlight(d);show(d)});
 svg.on('click',()=>{selected=null;highlight(null);closePanel()});
+const foldBox=document.getElementById('fold');
+if(groups.length){
+ const hid=groups.reduce((a,gn)=>a+gn.n,0);
+ // default to folded only when the settled part is genuinely in the way
+ foldBox.checked=hid>=25;
+ document.getElementById('foldbox').title=
+  hid+' established claims fold into '+groups.length+' block'+(groups.length>1?'s':'');
+}else document.getElementById('foldbox').style.display='none';
+foldBox.onchange=()=>{
+ if(foldBox.checked)for(const gn of groups)gn.open=false;
+ refreshVis();sim.alpha(.45).restart();
+};
 function refreshVis(){
  const sd=document.getElementById('showdead').checked;
+ const fold=foldBox.checked;
+ // hidden first, degree second: a claim is not an orphan for having only
+ // edges to things the fold is currently hiding
+ nodes.forEach(d=>{d.hidden=d.type==='group'?(!fold||d.open)
+  :d.region?(fold&&!byId[d.region].open):false});
+ const shown=l=>{const a=byId[l.source.id||l.source],b=byId[l.target.id||l.target];
+  return a&&b&&!a.hidden&&!b.hidden};
  const deg={};
- links.forEach(l=>{if(real(l)&&(!l.dead||sd)){
+ links.forEach(l=>{if(real(l)&&(!l.dead||sd)&&shown(l)){
   const a=l.source.id||l.source,b=l.target.id||l.target;
   deg[a]=(deg[a]||0)+1;deg[b]=(deg[b]||0)+1}});
  nodes.forEach(d=>{
   d.orphan=d.type==='claim'&&!d.root&&!d.goal&&!d.frontier&&!(deg[d.id]>0);
-  d.gone=d.orphan;
+  d.gone=d.orphan||d.hidden;
  });
  node.classed('orphan',d=>d.gone);
  lab.classed('orphan',d=>d.gone);
@@ -2853,8 +3057,10 @@ function refreshVis(){
  });
  g.classed('showdead',sd);
  sim.force('charge',d3.forceManyBody().strength(d=>d.gone?-2:-430));
- linkForce.strength(l=>l.kind==='aff'
-  ?((l.source.gone||l.target.gone)?0:.03+.1*l.w):.5);
+ // an edge to something hidden must not pull the visible graph towards the
+ // pile of hidden nodes
+ linkForce.strength(l=>(l.source.gone||l.target.gone)?0
+  :l.kind==='aff'?.03+.1*l.w:.5);
  sim.alpha(.5).restart();
  relabel();
 }
@@ -2865,9 +3071,11 @@ function placeLabels(){
    'translate('+(o.d.x+o.dx)+','+(o.d.y+o.dy)+')');
 }
 sim.on('tick',()=>{
- line.attr('x1',l=>l.source.x).attr('y1',l=>l.source.y)
-     .attr('x2',l=>l.target.x).attr('y2',l=>l.target.y);
+ line.each(trimEdge)
+     .attr('x1',l=>l.ex1).attr('y1',l=>l.ey1)
+     .attr('x2',l=>l.ex2).attr('y2',l=>l.ey2);
  node.attr('transform',d=>`translate(${d.x},${d.y})`);
+ gate.attr('transform',gateAim);
  placeLabels();
  scheduleRelabel();
 });

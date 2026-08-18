@@ -287,6 +287,17 @@ routes (dashed red, toggleable) keep their obstructions beside them,
 and anything unreachable parks at the bottom. Goals ringed, established
 filled, plus a frontier/library panel and per-node pages with
 statements, derivations, and dead space.
+
+A multi-premise route draws as a gate whose nose points at the claim it
+would establish: premises arrive at its flat back with small hollow
+heads, and the one edge out leaves heavy with a solid one, so which way
+a route fires is readable from the shape. `fold proven` (in the header)
+collapses each settled interior — a connected block of established
+claims that no open route reads from directly — into one block carrying
+its count. Goals, roots, obstructions and the established claims that
+feed open routes always stay explicit, relations that cross a fold are
+re-pointed at the block, and navigating to a folded claim opens its
+region. Folding is a view: it changes no status, route or file.
 **Live demo: <https://sauersml.github.io/Cairn/>** — a small worked
 example, rebuilt by CI from scratch on every push.
 
