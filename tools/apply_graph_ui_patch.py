@@ -118,8 +118,8 @@ rep("  if(d.gone||!isFinite(d.x))continue;\n  const w=o.w+LPAD*2,h=o.h+LPAD*2;\n
 rep("node.append('title').text(d=>d.type==='claim'?`${d.id} [${d.status}]`:(d.rtitle||d.route));\n",
     "node.append('title').text(d=>d.foldMembers&&d.foldMembers.length?`${d.foldMembers.length} established claims — click to inspect`:(d.type==='claim'?`${d.id} [${d.status}]`:(d.rtitle||d.route)));\n")
 
-rep("   const hub=byId['j:'+rid]||byId['x:'+rid];\n   if(hub){selected=hub;highlight(hub)}\n",
-    "   const hub=byId['j:'+rid]||byId['x:'+rid];\n   if(hub){if(compactMode&&hub.foldRep&&hub.id!==hub.foldRep)setCompact(false);selected=hub;highlight(hub)}\n")
+rep("  const hub=byId['j:'+rid]||byId['x:'+rid];\n  if(hub){selected=hub;highlight(hub)}\n",
+    "  const hub=byId['j:'+rid]||byId['x:'+rid];\n  if(hub){if(compactMode&&hub.foldRep&&hub.id!==hub.foldRep)setCompact(false);selected=hub;highlight(hub)}\n")
 
 showfold = r'''function showFold(d){
  const members=(d.foldMembers||[]).map(id=>claimById[id]).filter(Boolean)
