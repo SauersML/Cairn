@@ -1,0 +1,27 @@
+name: Contrib analyses
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cairn.py'
+      - 'contrib/**'
+      - '.github/workflows/contrib.yml'
+  pull_request:
+    paths:
+      - 'cairn.py'
+      - 'contrib/**'
+      - '.github/workflows/contrib.yml'
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: Standard-library smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Proof portfolio compiler
+        run: python3 contrib/test_proof_portfolios.py
+      - name: Genetic frontier epistasis analysis
+        run: python3 contrib/test_genetic_frontier.py
