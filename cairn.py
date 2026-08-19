@@ -224,7 +224,7 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 NON_NODE_FILES = {"README.md", "FRONTIER.md"}
 KINDS = ("claim", "route")
 
-__version__ = "2.8.0"
+__version__ = "2.8.1"
 
 EXIT_OK, EXIT_DUP, EXIT_LEASE, EXIT_INVALID, EXIT_USAGE = 0, 2, 3, 4, 64
 
@@ -3459,6 +3459,12 @@ def recently_touched(graph, limit=8):
     section by mtime made the generated file disagree with itself on every
     machine that regenerated it — a diff nobody wrote, in every checkout.
     An uncommitted edit is the most recent thing there is, so it sorts first.
+    A node the log window does not reach is the opposite of that — older than
+    every stamp we hold — and the two must not share a sentinel. Once a graph
+    grows past the window most of it misses, and one sentinel for both cases
+    ties nearly every node at "newest", where the tiebreak is the id: the
+    section then prints the alphabetically-last nodes as the latest work, in
+    every checkout, and nothing about it looks wrong.
     """
     hist, stamp = {}, None
     # bounded: the newest-touched nodes live in the newest commits by definition
@@ -3469,18 +3475,24 @@ def recently_touched(graph, limit=8):
         elif line and stamp:
             hist.setdefault(line, stamp)  # git log is newest-first
 
+    # what the worktree has that no commit does — the one thing that outranks
+    # every timestamp, and the only thing that may
+    pending = changed_research_files() or set()
+    NEW, OLD = "9999", "0000"       # uncommitted · older than the log window
+
     def stamp_of(n):
-        if n.relpath in hist:
-            return hist[n.relpath]
-        if r.returncode == 0:
-            return "9999"  # sorts above any ISO timestamp
-        return time.strftime("%Y-%m-%dT%H:%M:%S",
-                             time.localtime(os.path.getmtime(n.path)))
+        if r.returncode != 0:
+            return time.strftime("%Y-%m-%dT%H:%M:%S",
+                                 time.localtime(os.path.getmtime(n.path)))
+        if n.id in pending:
+            return NEW              # sorts above any ISO timestamp
+        return hist.get(n.relpath, OLD)
 
     today = time.strftime("%Y-%m-%d")
-    ordered = sorted(graph.nodes.values(),
-                     key=lambda n: (stamp_of(n), n.id), reverse=True)[:limit]
-    return [(today if stamp_of(n) == "9999" else stamp_of(n)[:10], n)
+    dated = [n for n in graph.nodes.values() if stamp_of(n) != OLD]
+    ordered = sorted(dated, key=lambda n: (stamp_of(n), n.id),
+                     reverse=True)[:limit]
+    return [(today if stamp_of(n) == NEW else stamp_of(n)[:10], n)
             for n in ordered]
 
 
