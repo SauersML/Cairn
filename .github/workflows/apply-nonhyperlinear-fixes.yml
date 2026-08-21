@@ -1,0 +1,80 @@
+name: Apply non-hyperlinear correctness fixes
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: contains(github.event.head_commit.message, '[apply nonhyperlinear fixes]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - name: Apply audited fixes
+        run: python3 tools/apply_nonhyperlinear_fixes.py
+      - name: Validate transformed source
+        run: |
+          git diff --check
+          python3 -m py_compile cairn.py tests/test_nonhyperlinear.py
+          python3 tests/test_nonhyperlinear.py
+          python3 cairn.py --version | grep 'cairn 2.8.2'
+      - name: Compatibility smoke
+        run: |
+          set -eux
+          rm -rf /tmp/cairn-smoke
+          mkdir -p /tmp/cairn-smoke/research /tmp/cairn-smoke/notes
+          cat > /tmp/cairn-smoke/research/goal.md <<'EOF'
+          ---
+          rg: 2
+          id: goal
+          kind: claim
+          title: Main goal
+          root: true
+          goal: true
+          ---
+
+          Main goal.
+          EOF
+          cat > /tmp/cairn-smoke/research/lemma.md <<'EOF'
+          ---
+          rg: 2
+          id: lemma
+          kind: claim
+          title: Key lemma
+          ---
+
+          Key lemma.
+          EOF
+          cat > /tmp/cairn-smoke/research/via-lemma.md <<'EOF'
+          ---
+          rg: 2
+          id: via-lemma
+          kind: route
+          title: Goal from lemma
+          target: goal
+          requires: [lemma]
+          ---
+
+          Lemma implies goal.
+          EOF
+          CAIRN_ROOT=/tmp/cairn-smoke CAIRN_STATE=/tmp/cairn-smoke/.state python3 cairn.py check --strict
+          CAIRN_ROOT=/tmp/cairn-smoke CAIRN_STATE=/tmp/cairn-smoke/.state python3 cairn.py status
+          CAIRN_ROOT=/tmp/cairn-smoke CAIRN_STATE=/tmp/cairn-smoke/.state python3 cairn.py frontier --json | grep lemma
+          CAIRN_ROOT=/tmp/cairn-smoke CAIRN_STATE=/tmp/cairn-smoke/.state python3 cairn.py impact lemma | grep goal
+          CAIRN_ROOT=/tmp/cairn-smoke CAIRN_STATE=/tmp/cairn-smoke/.state python3 cairn.py site
+          python3 -m pip install --quiet .
+          cairn --version | grep '2.8.2'
+      - name: Commit final fix directly to main
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm tools/apply_nonhyperlinear_fixes.py .github/workflows/apply-nonhyperlinear-fixes.yml
+          git add cairn.py pyproject.toml .github/workflows/ci.yml tests/test_nonhyperlinear.py
+          git commit -m 'v2.8.2: make negation and obstruction counterfactuals sound' -m 'Separate text and math stopword vocabularies, preserve proposition-level negation around non-hyperlinear wording, and classify only exact reciprocal unary routes as equivalences.\n\nMake impact/why/site report non-monotone retractions and route reactivations, refuse unstable counterfactuals, surface goal-only frontier lanes, validate lock targets/paths, keep failed checks from overwriting derived state, and stop hiding disconnected canonical nodes.\n\nAdd dedicated non-hyperlinear and non-monotone regression coverage.'
+          git push origin HEAD:main
