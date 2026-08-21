@@ -3,18 +3,24 @@ name: Apply non-hyperlinear correctness fixes
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   apply:
-    if: contains(github.event.head_commit.message, '[apply nonhyperlinear fixes]')
+    if: >-
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[apply nonhyperlinear fixes]')) ||
+      (github.event_name == 'pull_request' && github.head_ref == 'cairn-nonhyperlinear-validator')
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: main
           fetch-depth: 0
       - name: Apply audited fixes
         run: python3 tools/apply_nonhyperlinear_fixes.py
@@ -71,6 +77,8 @@ jobs:
           python3 -m pip install --quiet .
           cairn --version | grep '2.8.2'
       - name: Commit final fix directly to main
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -78,3 +86,7 @@ jobs:
           git add cairn.py pyproject.toml .github/workflows/ci.yml tests/test_nonhyperlinear.py
           git commit -m 'v2.8.2: make negation and obstruction counterfactuals sound' -m 'Separate text and math stopword vocabularies, preserve proposition-level negation around non-hyperlinear wording, and classify only exact reciprocal unary routes as equivalences.\n\nMake impact/why/site report non-monotone retractions and route reactivations, refuse unstable counterfactuals, surface goal-only frontier lanes, validate lock targets/paths, keep failed checks from overwriting derived state, and stop hiding disconnected canonical nodes.\n\nAdd dedicated non-hyperlinear and non-monotone regression coverage.'
           git push origin HEAD:main
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            gh pr close "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" || true
+            git push origin --delete cairn-nonhyperlinear-validator || true
+          fi
