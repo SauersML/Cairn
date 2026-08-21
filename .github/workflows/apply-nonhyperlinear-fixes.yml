@@ -30,6 +30,7 @@ jobs:
           python3 tools/apply_nonhyperlinear_fixes.py
           python3 - <<'PY'
           from pathlib import Path
+
           p = Path('cairn.py')
           s = p.read_text(encoding='utf-8')
           old = 'if len(w) > 2 and w not in TEXT_STOPWORDS'
@@ -43,22 +44,42 @@ jobs:
           if ts.count(', root=True)') != 5:
               raise SystemExit(f'root fixture calls: expected 5, got {ts.count(", root=True)")}')
           ts = ts.replace(', root=True)', ', root_=True)')
+          if ts.count('"x"') != 2 or ts.count('"y"') != 2:
+              raise SystemExit(f'short fixture ids: x={ts.count(chr(34)+"x"+chr(34))}, y={ts.count(chr(34)+"y"+chr(34))}')
+          ts = ts.replace('"x"', '"xx"').replace('"y"', '"yy"')
           old = 'self.assertIn("nearest: side-leaf", r.stderr)'
           if ts.count(old) != 1:
               raise SystemExit(f'nearest assertion sites: expected 1, got {ts.count(old)}')
           ts = ts.replace(old, 'self.assertIn("nearest:", r.stderr)\n        self.assertIn("side-leaf", r.stderr)', 1)
-          old = 'self.assertFalse(any(rule == "stratification" for _, rule, _ in graph.errors))'
-          if ts.count(old) != 1:
-              raise SystemExit(f'stratification assertion sites: expected 1, got {ts.count(old)}')
-          diag = ('result = graph._solve(forced=frozenset({"trigger"}))\n'
-                  '        self.assertFalse(result[3], (result, graph.claims["x"].meta, '
-                  'graph.claims["y"].meta, graph.routes["r-x"].meta, graph.routes["r-y"].meta))')
-          ts = ts.replace(old, old + '\n        ' + diag, 1)
-          old = 'self.assertEqual(r.returncode, 1)\n        self.assertIn("stable invalidation fixpoint", r.stdout)'
-          if ts.count(old) != 1:
-              raise SystemExit(f'unstable CLI assertion sites: expected 1, got {ts.count(old)}')
-          ts = ts.replace(old, 'self.assertEqual(r.returncode, 1, (r.stdout, r.stderr))\n        self.assertIn("stable invalidation fixpoint", r.stdout)', 1)
           t.write_text(ts, encoding='utf-8')
+
+          r = Path('README.md')
+          rs = r.read_text(encoding='utf-8')
+          old = '''- the **frontier**: open, reachable claims with no live decomposition —
+  the actual attack surface;
+- **goal cones**: which holes sit on a live route-tree under each goal,
+  and which are *necessary* — granting every other open hole still
+  doesn't reach the goal without this one (the forced-solve run in
+  reverse);
+'''
+          new = '''- the **frontier**: undecomposed open claims reachable from roots, plus
+  undecomposed holes on live route-trees under open human goals — the
+  actual attack surface even when a goal is not also root-reachable;
+- **goal cones**: which holes sit on a live route-tree under each goal,
+  and, when that cone is obstruction-free, which are *necessary* —
+  granting every other cone hole still doesn't reach the goal without
+  this one. Cairn deliberately does not infer necessity by forcing every
+  hole at once in obstruction-sensitive cones, where that counterfactual
+  is non-monotone;
+'''
+          if rs.count(old) != 1:
+              raise SystemExit(f'README goal-cone paragraph: expected 1, got {rs.count(old)}')
+          rs = rs.replace(old, new, 1)
+          old = '| `impact <id>` | what would flip if this claim were established |'
+          new = '| `impact <id>` | full counterfactual delta if this claim were established: claims gained/retracted and routes closed/reactivated |'
+          if rs.count(old) != 1:
+              raise SystemExit(f'README impact row: expected 1, got {rs.count(old)}')
+          r.write_text(rs.replace(old, new, 1), encoding='utf-8')
           PY
       - name: Validate transformed source
         run: |
@@ -119,8 +140,8 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git rm tools/apply_nonhyperlinear_fixes.py .github/workflows/apply-nonhyperlinear-fixes.yml
-          git add cairn.py pyproject.toml .github/workflows/ci.yml tests/test_nonhyperlinear.py
-          git commit -m 'v2.8.2: make negation and obstruction counterfactuals sound' -m 'Separate text and math stopword vocabularies, preserve proposition-level negation around non-hyperlinear wording, and classify only exact reciprocal unary routes as equivalences.\n\nMake impact/why/site report non-monotone retractions and route reactivations, refuse unstable counterfactuals, surface goal-only frontier lanes, validate lock targets/paths, keep failed checks from overwriting derived state, and stop hiding disconnected canonical nodes.\n\nAdd dedicated non-hyperlinear and non-monotone regression coverage.'
+          git add cairn.py pyproject.toml README.md .github/workflows/ci.yml tests/test_nonhyperlinear.py
+          git commit -m 'v2.8.2: make negation and obstruction counterfactuals sound' -m 'Separate text and math stopword vocabularies, preserve proposition-level negation around non-hyperlinear wording, and classify only exact reciprocal unary routes as equivalences.\n\nMake impact/why/site report non-monotone retractions and route reactivations, refuse unstable counterfactuals, surface goal-only frontier lanes, validate lock targets/paths, keep failed checks from overwriting derived state, and stop hiding disconnected canonical nodes.\n\nDocument obstruction-sensitive frontier semantics and add dedicated non-hyperlinear/non-monotone regression coverage.'
           git push origin HEAD:main
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             gh pr close "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" || true
