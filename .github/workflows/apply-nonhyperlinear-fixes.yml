@@ -50,7 +50,10 @@ jobs:
           old = 'self.assertFalse(any(rule == "stratification" for _, rule, _ in graph.errors))'
           if ts.count(old) != 1:
               raise SystemExit(f'stratification assertion sites: expected 1, got {ts.count(old)}')
-          ts = ts.replace(old, old + '\n        self.assertFalse(graph._solve(forced=frozenset({"trigger"}))[3])', 1)
+          diag = ('result = graph._solve(forced=frozenset({"trigger"}))\n'
+                  '        self.assertFalse(result[3], (result, graph.claims["x"].meta, '
+                  'graph.claims["y"].meta, graph.routes["r-x"].meta, graph.routes["r-y"].meta))')
+          ts = ts.replace(old, old + '\n        ' + diag, 1)
           old = 'self.assertEqual(r.returncode, 1)\n        self.assertIn("stable invalidation fixpoint", r.stdout)'
           if ts.count(old) != 1:
               raise SystemExit(f'unstable CLI assertion sites: expected 1, got {ts.count(old)}')
