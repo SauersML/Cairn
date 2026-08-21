@@ -114,12 +114,15 @@ cycle). It then derives:
 - **status** per node: claims `ESTABLISHED`/`OPEN`; routes
   `COMPLETE`/`OPEN`/`INVALIDATED`, with provenance ("via route …");
 - **reachability** from root claims through live routes;
-- the **frontier**: open, reachable claims with no live decomposition —
-  the actual attack surface;
+- the **frontier**: undecomposed open claims reachable from roots, plus
+  undecomposed holes on live route-trees under open human goals — the
+  actual attack surface even when a goal is not also root-reachable;
 - **goal cones**: which holes sit on a live route-tree under each goal,
-  and which are *necessary* — granting every other open hole still
-  doesn't reach the goal without this one (the forced-solve run in
-  reverse);
+  and, when that cone is obstruction-free, which are *necessary* —
+  granting every other cone hole still doesn't reach the goal without
+  this one. Cairn deliberately does not infer necessity by forcing every
+  hole at once in obstruction-sensitive cones, where that counterfactual
+  is non-monotone;
 - **impact**: how many live routes are waiting on each claim;
 - warnings, each of which has to earn its line:
   **possible duplicate claims** — title overlap *and* a TF-IDF gate over
@@ -149,7 +152,7 @@ Read-only over canonical files and deliberately small — twelve commands:
 | `why <id>` | established → the derivation tree; open → the live decomposition tree, why it matters, and what's waiting on it |
 | `context <id>` | bounded packet for one node: statement, derivation, routes in/out, reusable established claims, nearby failed space (`--budget` tokens) |
 | `search <q>…` · `relevant` | lexical search over the graph, each hit tagged with its **compiled status** (`--notes` to include notes/); pass several queries to sweep them in one pass; `--similar` ranks by similarity to an id or text |
-| `impact <id>` | what would flip if this claim were established |
+| `impact <id>` | full counterfactual delta if this claim were established: claims gained/retracted and routes closed/reactivated |
 | `lock <id> --ttl 45m` | claim a hole (advisory, identity-free); every reply lists the full active-lock roster |
 | `unlock <id>` | release a claim |
 | `site` | static HTML site into `.cairn/site/` (`--serve` to preview) |
