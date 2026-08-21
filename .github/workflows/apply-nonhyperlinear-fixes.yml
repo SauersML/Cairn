@@ -45,7 +45,7 @@ jobs:
               raise SystemExit(f'root fixture calls: expected 5, got {ts.count(", root=True)")}')
           ts = ts.replace(', root=True)', ', root_=True)')
           if ts.count('"x"') != 2 or ts.count('"y"') != 2:
-              raise SystemExit(f'short fixture ids: x={ts.count(chr(34)+"x"+chr(34))}, y={ts.count(chr(34)+"y"+chr(34))}')
+              raise SystemExit('unexpected short fixture-id count')
           ts = ts.replace('"x"', '"xx"').replace('"y"', '"yy"')
           old = 'self.assertIn("nearest: side-leaf", r.stderr)'
           if ts.count(old) != 1:
@@ -55,23 +55,21 @@ jobs:
 
           r = Path('README.md')
           rs = r.read_text(encoding='utf-8')
-          old = '''- the **frontier**: open, reachable claims with no live decomposition —
-  the actual attack surface;
-- **goal cones**: which holes sit on a live route-tree under each goal,
-  and which are *necessary* — granting every other open hole still
-  doesn't reach the goal without this one (the forced-solve run in
-  reverse);
-'''
-          new = '''- the **frontier**: undecomposed open claims reachable from roots, plus
-  undecomposed holes on live route-trees under open human goals — the
-  actual attack surface even when a goal is not also root-reachable;
-- **goal cones**: which holes sit on a live route-tree under each goal,
-  and, when that cone is obstruction-free, which are *necessary* —
-  granting every other cone hole still doesn't reach the goal without
-  this one. Cairn deliberately does not infer necessity by forcing every
-  hole at once in obstruction-sensitive cones, where that counterfactual
-  is non-monotone;
-'''
+          old = ('- the **frontier**: open, reachable claims with no live decomposition —\n'
+                 '  the actual attack surface;\n'
+                 '- **goal cones**: which holes sit on a live route-tree under each goal,\n'
+                 '  and which are *necessary* — granting every other open hole still\n'
+                 "  doesn't reach the goal without this one (the forced-solve run in\n"
+                 '  reverse);\n')
+          new = ('- the **frontier**: undecomposed open claims reachable from roots, plus\n'
+                 '  undecomposed holes on live route-trees under open human goals — the\n'
+                 '  actual attack surface even when a goal is not also root-reachable;\n'
+                 '- **goal cones**: which holes sit on a live route-tree under each goal,\n'
+                 '  and, when that cone is obstruction-free, which are *necessary* —\n'
+                 "  granting every other cone hole still doesn't reach the goal without\n"
+                 '  this one. Cairn deliberately does not infer necessity by forcing every\n'
+                 '  hole at once in obstruction-sensitive cones, where that counterfactual\n'
+                 '  is non-monotone;\n')
           if rs.count(old) != 1:
               raise SystemExit(f'README goal-cone paragraph: expected 1, got {rs.count(old)}')
           rs = rs.replace(old, new, 1)
