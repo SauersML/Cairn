@@ -28,6 +28,21 @@ jobs:
           sed -i 's/negation callers: expected 2/negation callers: expected 4/' tools/apply_nonhyperlinear_fixes.py
           sed -i 's/re.subn(pattern, repl, text, count=1, flags=flags)/re.subn(pattern, lambda _m: repl, text, count=1, flags=flags)/' tools/apply_nonhyperlinear_fixes.py
           python3 tools/apply_nonhyperlinear_fixes.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('cairn.py')
+          s = p.read_text(encoding='utf-8')
+          old = 'if len(w) > 2 and w not in TEXT_STOPWORDS'
+          if s.count(old) != 2:
+              raise SystemExit(f'short logical token sites: expected 2, got {s.count(old)}')
+          s = s.replace(old, 'if (len(w) > 2 or w == "no") and w not in TEXT_STOPWORDS')
+          p.write_text(s, encoding='utf-8')
+          t = Path('tests/test_nonhyperlinear.py')
+          ts = t.read_text(encoding='utf-8')
+          if ts.count(', root=True)') != 5:
+              raise SystemExit(f'root fixture calls: expected 5, got {ts.count(", root=True)")}')
+          t.write_text(ts.replace(', root=True)', ', root_=True)'), encoding='utf-8')
+          PY
       - name: Validate transformed source
         run: |
           git diff --check
