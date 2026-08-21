@@ -1,0 +1,23 @@
+name: Non-hyperlinear regressions
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Compile regression targets
+        run: python3 -m py_compile cairn.py tests/test_nonhyperlinear.py
+      - name: Run non-hyperlinear and non-monotone regressions
+        run: python3 tests/test_nonhyperlinear.py
+      - name: Verify version
+        run: python3 cairn.py --version | grep 'cairn 2.8.2'
