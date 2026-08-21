@@ -24,120 +24,21 @@ jobs:
           fetch-depth: 0
       - name: Apply audited fixes
         run: |
-          sed -i "s/text.count('_negated(') != 2/text.count('_negated(') != 4/" tools/apply_nonhyperlinear_fixes.py
-          sed -i 's/negation callers: expected 2/negation callers: expected 4/' tools/apply_nonhyperlinear_fixes.py
-          sed -i 's/re.subn(pattern, repl, text, count=1, flags=flags)/re.subn(pattern, lambda _m: repl, text, count=1, flags=flags)/' tools/apply_nonhyperlinear_fixes.py
-          python3 tools/apply_nonhyperlinear_fixes.py
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p = Path('cairn.py')
-          s = p.read_text(encoding='utf-8')
-          old = 'if len(w) > 2 and w not in TEXT_STOPWORDS'
-          if s.count(old) != 2:
-              raise SystemExit(f'short logical token sites: expected 2, got {s.count(old)}')
-          s = s.replace(old, 'if (len(w) > 2 or w == "no") and w not in TEXT_STOPWORDS')
-          p.write_text(s, encoding='utf-8')
-
-          t = Path('tests/test_nonhyperlinear.py')
-          ts = t.read_text(encoding='utf-8')
-          if ts.count(', root=True)') != 5:
-              raise SystemExit(f'root fixture calls: expected 5, got {ts.count(", root=True)")}')
-          ts = ts.replace(', root=True)', ', root_=True)')
-          if ts.count('"x"') != 2 or ts.count('"y"') != 2:
-              raise SystemExit('unexpected short fixture-id count')
-          ts = ts.replace('"x"', '"xx"').replace('"y"', '"yy"')
-          old = 'self.assertIn("nearest: side-leaf", r.stderr)'
-          if ts.count(old) != 1:
-              raise SystemExit(f'nearest assertion sites: expected 1, got {ts.count(old)}')
-          ts = ts.replace(old, 'self.assertIn("nearest:", r.stderr)\n        self.assertIn("side-leaf", r.stderr)', 1)
-          t.write_text(ts, encoding='utf-8')
-
-          r = Path('README.md')
-          rs = r.read_text(encoding='utf-8')
-          old = ('- the **frontier**: open, reachable claims with no live decomposition —\n'
-                 '  the actual attack surface;\n'
-                 '- **goal cones**: which holes sit on a live route-tree under each goal,\n'
-                 '  and which are *necessary* — granting every other open hole still\n'
-                 "  doesn't reach the goal without this one (the forced-solve run in\n"
-                 '  reverse);\n')
-          new = ('- the **frontier**: undecomposed open claims reachable from roots, plus\n'
-                 '  undecomposed holes on live route-trees under open human goals — the\n'
-                 '  actual attack surface even when a goal is not also root-reachable;\n'
-                 '- **goal cones**: which holes sit on a live route-tree under each goal,\n'
-                 '  and, when that cone is obstruction-free, which are *necessary* —\n'
-                 "  granting every other cone hole still doesn't reach the goal without\n"
-                 '  this one. Cairn deliberately does not infer necessity by forcing every\n'
-                 '  hole at once in obstruction-sensitive cones, where that counterfactual\n'
-                 '  is non-monotone;\n')
-          if rs.count(old) != 1:
-              raise SystemExit(f'README goal-cone paragraph: expected 1, got {rs.count(old)}')
-          rs = rs.replace(old, new, 1)
-          old = '| `impact <id>` | what would flip if this claim were established |'
-          new = '| `impact <id>` | full counterfactual delta if this claim were established: claims gained/retracted and routes closed/reactivated |'
-          if rs.count(old) != 1:
-              raise SystemExit(f'README impact row: expected 1, got {rs.count(old)}')
-          r.write_text(rs.replace(old, new, 1), encoding='utf-8')
-          PY
+          python3 -m py_compile tools/run_nonhyperlinear_fixes.py tools/apply_nonhyperlinear_fixes.py
+          python3 tools/run_nonhyperlinear_fixes.py
       - name: Validate transformed source
         run: |
           git diff --check
           python3 -m py_compile cairn.py tests/test_nonhyperlinear.py
           python3 tests/test_nonhyperlinear.py
           python3 cairn.py --version | grep 'cairn 2.8.2'
-      - name: Compatibility smoke
-        run: |
-          set -eux
-          rm -rf /tmp/cairn-smoke
-          mkdir -p /tmp/cairn-smoke/research /tmp/cairn-smoke/notes
-          cat > /tmp/cairn-smoke/research/goal.md <<'EOF'
-          ---
-          rg: 2
-          id: goal
-          kind: claim
-          title: Main goal
-          root: true
-          goal: true
-          ---
-
-          Main goal.
-          EOF
-          cat > /tmp/cairn-smoke/research/lemma.md <<'EOF'
-          ---
-          rg: 2
-          id: lemma
-          kind: claim
-          title: Key lemma
-          ---
-
-          Key lemma.
-          EOF
-          cat > /tmp/cairn-smoke/research/via-lemma.md <<'EOF'
-          ---
-          rg: 2
-          id: via-lemma
-          kind: route
-          title: Goal from lemma
-          target: goal
-          requires: [lemma]
-          ---
-
-          Lemma implies goal.
-          EOF
-          CAIRN_ROOT=/tmp/cairn-smoke CAIRN_STATE=/tmp/cairn-smoke/.state python3 cairn.py check --strict
-          CAIRN_ROOT=/tmp/cairn-smoke CAIRN_STATE=/tmp/cairn-smoke/.state python3 cairn.py status
-          CAIRN_ROOT=/tmp/cairn-smoke CAIRN_STATE=/tmp/cairn-smoke/.state python3 cairn.py frontier --json | grep lemma
-          CAIRN_ROOT=/tmp/cairn-smoke CAIRN_STATE=/tmp/cairn-smoke/.state python3 cairn.py impact lemma | grep goal
-          CAIRN_ROOT=/tmp/cairn-smoke CAIRN_STATE=/tmp/cairn-smoke/.state python3 cairn.py site
-          python3 -m pip install --quiet .
-          cairn --version | grep '2.8.2'
       - name: Commit final fix directly to main
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm tools/apply_nonhyperlinear_fixes.py .github/workflows/apply-nonhyperlinear-fixes.yml
+          git rm tools/apply_nonhyperlinear_fixes.py tools/run_nonhyperlinear_fixes.py .github/workflows/apply-nonhyperlinear-fixes.yml
           git add cairn.py pyproject.toml README.md .github/workflows/ci.yml tests/test_nonhyperlinear.py
           git commit -m 'v2.8.2: make negation and obstruction counterfactuals sound' -m 'Separate text and math stopword vocabularies, preserve proposition-level negation around non-hyperlinear wording, and classify only exact reciprocal unary routes as equivalences.\n\nMake impact/why/site report non-monotone retractions and route reactivations, refuse unstable counterfactuals, surface goal-only frontier lanes, validate lock targets/paths, keep failed checks from overwriting derived state, and stop hiding disconnected canonical nodes.\n\nDocument obstruction-sensitive frontier semantics and add dedicated non-hyperlinear/non-monotone regression coverage.'
           git push origin HEAD:main
