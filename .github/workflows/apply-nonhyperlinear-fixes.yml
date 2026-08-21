@@ -37,11 +37,21 @@ jobs:
               raise SystemExit(f'short logical token sites: expected 2, got {s.count(old)}')
           s = s.replace(old, 'if (len(w) > 2 or w == "no") and w not in TEXT_STOPWORDS')
           p.write_text(s, encoding='utf-8')
+
           t = Path('tests/test_nonhyperlinear.py')
           ts = t.read_text(encoding='utf-8')
           if ts.count(', root=True)') != 5:
               raise SystemExit(f'root fixture calls: expected 5, got {ts.count(", root=True)")}')
-          t.write_text(ts.replace(', root=True)', ', root_=True)'), encoding='utf-8')
+          ts = ts.replace(', root=True)', ', root_=True)')
+          ts = ts.replace(
+              'self.assertIn("nearest: side-leaf", r.stderr)',
+              'self.assertIn("nearest:", r.stderr)\n        self.assertIn("side-leaf", r.stderr)')
+          old_diag = '''        graph = compile_at(self.root)\n        self.assertFalse(any(rule == "stratification" for _, rule, _ in graph.errors))\n\n        r = run_cli(self.root, "impact", "trigger", "--json")\n        self.assertEqual(r.returncode, 1)\n        self.assertIn("stable invalidation fixpoint", r.stdout)\n'''
+          new_diag = '''        graph = compile_at(self.root)\n        self.assertFalse(any(rule == "stratification" for _, rule, _ in graph.errors))\n        self.assertFalse(graph._solve(forced=frozenset({"trigger"}))[3])\n\n        r = run_cli(self.root, "impact", "trigger", "--json")\n        self.assertEqual(r.returncode, 1, (r.stdout, r.stderr))\n        self.assertIn("stable invalidation fixpoint", r.stdout)\n'''
+          if old_diag not in ts:
+              raise SystemExit('unstable diagnostic block not found')
+          ts = ts.replace(old_diag, new_diag, 1)
+          t.write_text(ts, encoding='utf-8')
           PY
       - name: Validate transformed source
         run: |
