@@ -26,6 +26,7 @@ jobs:
         run: |
           sed -i "s/text.count('_negated(') != 2/text.count('_negated(') != 4/" tools/apply_nonhyperlinear_fixes.py
           sed -i 's/negation callers: expected 2/negation callers: expected 4/' tools/apply_nonhyperlinear_fixes.py
+          sed -i 's/re.subn(pattern, repl, text, count=1, flags=flags)/re.subn(pattern, lambda _m: repl, text, count=1, flags=flags)/' tools/apply_nonhyperlinear_fixes.py
           python3 tools/apply_nonhyperlinear_fixes.py
       - name: Validate transformed source
         run: |
