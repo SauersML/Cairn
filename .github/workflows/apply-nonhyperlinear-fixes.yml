@@ -43,14 +43,18 @@ jobs:
           if ts.count(', root=True)') != 5:
               raise SystemExit(f'root fixture calls: expected 5, got {ts.count(", root=True)")}')
           ts = ts.replace(', root=True)', ', root_=True)')
-          ts = ts.replace(
-              'self.assertIn("nearest: side-leaf", r.stderr)',
-              'self.assertIn("nearest:", r.stderr)\n        self.assertIn("side-leaf", r.stderr)')
-          old_diag = '''        graph = compile_at(self.root)\n        self.assertFalse(any(rule == "stratification" for _, rule, _ in graph.errors))\n\n        r = run_cli(self.root, "impact", "trigger", "--json")\n        self.assertEqual(r.returncode, 1)\n        self.assertIn("stable invalidation fixpoint", r.stdout)\n'''
-          new_diag = '''        graph = compile_at(self.root)\n        self.assertFalse(any(rule == "stratification" for _, rule, _ in graph.errors))\n        self.assertFalse(graph._solve(forced=frozenset({"trigger"}))[3])\n\n        r = run_cli(self.root, "impact", "trigger", "--json")\n        self.assertEqual(r.returncode, 1, (r.stdout, r.stderr))\n        self.assertIn("stable invalidation fixpoint", r.stdout)\n'''
-          if old_diag not in ts:
-              raise SystemExit('unstable diagnostic block not found')
-          ts = ts.replace(old_diag, new_diag, 1)
+          old = 'self.assertIn("nearest: side-leaf", r.stderr)'
+          if ts.count(old) != 1:
+              raise SystemExit(f'nearest assertion sites: expected 1, got {ts.count(old)}')
+          ts = ts.replace(old, 'self.assertIn("nearest:", r.stderr)\n        self.assertIn("side-leaf", r.stderr)', 1)
+          old = 'self.assertFalse(any(rule == "stratification" for _, rule, _ in graph.errors))'
+          if ts.count(old) != 1:
+              raise SystemExit(f'stratification assertion sites: expected 1, got {ts.count(old)}')
+          ts = ts.replace(old, old + '\n        self.assertFalse(graph._solve(forced=frozenset({"trigger"}))[3])', 1)
+          old = 'self.assertEqual(r.returncode, 1)\n        self.assertIn("stable invalidation fixpoint", r.stdout)'
+          if ts.count(old) != 1:
+              raise SystemExit(f'unstable CLI assertion sites: expected 1, got {ts.count(old)}')
+          ts = ts.replace(old, 'self.assertEqual(r.returncode, 1, (r.stdout, r.stderr))\n        self.assertIn("stable invalidation fixpoint", r.stdout)', 1)
           t.write_text(ts, encoding='utf-8')
           PY
       - name: Validate transformed source
