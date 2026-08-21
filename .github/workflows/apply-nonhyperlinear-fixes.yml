@@ -32,14 +32,15 @@ jobs:
           python3 -m py_compile cairn.py tests/test_nonhyperlinear.py
           python3 tests/test_nonhyperlinear.py
           python3 cairn.py --version | grep 'cairn 2.8.2'
-      - name: Commit final fix directly to main
+      - name: Commit validated source directly to main
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm -f tools/apply_nonhyperlinear_fixes.py tools/run_nonhyperlinear_fixes.py .github/workflows/apply-nonhyperlinear-fixes.yml
-          git add cairn.py pyproject.toml README.md .github/workflows/ci.yml tests/test_nonhyperlinear.py
+          git checkout -- .github/workflows/ci.yml
+          git rm -f tools/apply_nonhyperlinear_fixes.py tools/run_nonhyperlinear_fixes.py
+          git add cairn.py pyproject.toml README.md tests/test_nonhyperlinear.py
           git commit -m 'v2.8.2: make negation and obstruction counterfactuals sound' -m 'Separate text and math stopword vocabularies, preserve proposition-level negation around non-hyperlinear wording, and classify only exact reciprocal unary routes as equivalences.\n\nMake impact/why/site report non-monotone retractions and route reactivations, refuse unstable counterfactuals, surface goal-only frontier lanes, validate lock targets/paths, keep failed checks from overwriting derived state, and stop hiding disconnected canonical nodes.\n\nDocument obstruction-sensitive frontier semantics and add dedicated non-hyperlinear/non-monotone regression coverage.'
           git push origin HEAD:main
           if [ "${{ github.event_name }}" = "pull_request" ]; then
