@@ -76,6 +76,31 @@ class NegationTests(Project):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(r.stdout.splitlines()[0].startswith("z-negative"), r.stdout)
 
+    def test_sparse_affinity_matches_exhaustive_cosine_selection(self):
+        vectors = {
+            "alpha": {"x": 1.0, "y": 0.5},
+            "beta": {"x": 0.8, "z": 0.2},
+            "gamma": {"y": 1.0, "z": 0.3},
+            "delta": {"unshared": 1.0},
+            "epsilon": {},
+        }
+        pairs = []
+        ids = list(vectors)
+        for i, left in enumerate(ids):
+            for right in ids[i + 1:]:
+                score = cairn.cosine(vectors[left], vectors[right])
+                if score >= 0.16:
+                    pairs.append((score, left, right))
+        pairs.sort(reverse=True)
+        counts, expected = {}, []
+        for score, left, right in pairs:
+            if counts.get(left, 0) < 3 and counts.get(right, 0) < 3:
+                expected.append({"a": left, "b": right,
+                                 "w": round(min(1.0, score), 2)})
+                counts[left] = counts.get(left, 0) + 1
+                counts[right] = counts.get(right, 0) + 1
+        self.assertEqual(cairn.semantic_affinity(vectors), expected)
+
 
 class CycleTests(Project):
     def test_two_claim_ring_is_equivalence_only_when_both_edges_are_unary(self):
@@ -149,6 +174,38 @@ class FrontierAndLockTests(Project):
         r = run_cli(self.root, "unlock", "../escape")
         self.assertEqual(r.returncode, 1)
         self.assertIn("malformed node id", r.stderr)
+
+    def test_compiled_cache_is_used_only_for_an_identical_source_manifest(self):
+        r = run_cli(self.root, "check")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        cache = json.loads((self.root / ".cairn" / "cache" / "graph.json")
+                           .read_text(encoding="utf-8"))
+        self.assertEqual(cache["cache"]["format"], cairn.CACHE_FORMAT)
+        self.assertNotIn("body", cache["nodes"]["side-leaf"])
+        self.assertTrue((self.root / ".cairn" / "cache" / "nodes.sqlite3").is_file())
+        r = run_cli(self.root, "status", "--json")
+        self.assertTrue(json.loads(r.stdout)["cache_hit"], r.stderr)
+        claim(self.root, "fresh-hole", "A newly edited hole")
+        r = run_cli(self.root, "status", "--json")
+        self.assertFalse(json.loads(r.stdout)["cache_hit"], r.stderr)
+        r = run_cli(self.root, "telemetry", "--json")
+        telemetry = json.loads(r.stdout)["per_command"]["status"]
+        self.assertIn("p90_ms", telemetry)
+        self.assertIn("p50_cpu_ms", telemetry)
+        self.assertIn("p90_rss_mb", telemetry)
+        self.assertEqual(telemetry["cache_hits"], 1)
+        self.assertEqual(telemetry["cache_misses"], 1)
+
+    def test_notes_are_citable_artifacts_but_never_compiled_nodes(self):
+        (self.root / "notes").mkdir()
+        (self.root / "notes" / "derivation.md").write_text(
+            "Supporting derivation, outside compiled state.\n", encoding="utf-8")
+        claim(self.root, "cited-result", "Result with prose support",
+              artifacts=["notes/derivation.md"])
+        graph = compile_at(self.root)
+        self.assertFalse(any(rule == "artifact" for _, rule, _ in graph.errors),
+                         graph.errors)
+        self.assertNotIn("derivation", graph.nodes)
 
 
 class FrontierNecessityTests(Project):

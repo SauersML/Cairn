@@ -21,14 +21,15 @@ Everything else falls out:
   A reduction is a route with one prerequisite. An equivalence is two
   routes. A proof is a route with no prerequisites. No further ontology.
 
-CANONICAL vs NONCANONICAL:
+THE TWO TIERS:
   research/*.md          claims + routes (flat; `kind:` says which) — the
                          authoritative graph. Agents edit these DIRECTLY
                          with their normal tools; this CLI never writes them.
   research/artifacts/    substantial proof artifacts routes may cite.
-  notes/                 scratch, session logs, thinking out loud —
-                         searchable, but can NEVER change compiled state,
-                         and canonical files may not cite it as justification.
+  notes/                 the prose corpus: derivations, audits, dead ends,
+                         session logs. Searchable and citable via
+                         `artifacts:`, but never compiled — prose cannot
+                         change research state, only a route and its proof.
 
 THE CLI is read-only over canonical files and deliberately small —
 twelve commands: check (compile+lint+dups, refreshes FRONTIER.md; alias:
@@ -40,8 +41,7 @@ context --budget (statement, derivation, routes, reusable claims, dead
 space in one bounded packet), search [--notes|--similar] — several
 queries sweep in one pass (alias: relevant = search --similar), impact,
 lock/unlock (advisory TTL claims — identity-free: everyone is one
-team), site [--serve], telemetry, vendor
-(bootstrap, below). Claims are scheduler state, never committed into
+team), site [--serve], telemetry. Claims are scheduler state, never committed into
 mathematical history.
 
 INSTALLING INTO A PROJECT: copy this file into the repo and commit it.
@@ -121,7 +121,9 @@ import html
 import json
 import os
 import re
+import resource
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -225,8 +227,9 @@ def telemetry_path():
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 NON_NODE_FILES = {"README.md", "FRONTIER.md"}
 KINDS = ("claim", "route")
+CACHE_FORMAT = 2
 
-__version__ = "2.9.0"
+__version__ = "2.10.0"
 
 EXIT_OK, EXIT_DUP, EXIT_LEASE, EXIT_INVALID, EXIT_USAGE = 0, 2, 3, 4, 64
 
@@ -464,16 +467,12 @@ def lint_nodes(nodes, errors, repo=REPO):
             if not isinstance(p, str):
                 errors.append(("error", "artifact", f"{node.relpath}: malformed artifact entry: {p!r}"))
                 continue
-            path_part = p
             if not os.path.exists(os.path.join(repo, p)):
                 # a <rev>:<path> entry pins a file that left the working tree
                 if p not in existing_pins:
                     errors.append(("error", "artifact", f"{node.relpath}: artifact not found: {p} "
                                    "(want a working-tree path or a <rev>:<path> pin)"))
                     continue
-                path_part = p.split(":", 1)[1]
-            if path_part.startswith("notes/") or "/notes/" in path_part:
-                errors.append(("error", "noncanonical", f"{node.relpath}: canonical node cites noncanonical justification: {p}"))
         if node.kind == "claim":
             if node.meta.get("root") not in (None, True, False):
                 errors.append(("error", "flag", f"{node.relpath}: root must be true/false"))
@@ -548,35 +547,28 @@ class Graph:
 
     def _solve(self, forced=frozenset()):
         """Return (established, refuted, invalidated, provenance, stable)."""
-        inv_map = {}
-        for c in self.claims.values():
-            for r in c.get_list("invalidates"):
-                if r in self.routes:
-                    inv_map.setdefault(c.id, []).append(r)
         prev_inv, prev_ref, seen = set(), set(), []
         for _ in range(64):
             est, prov = set(forced) - prev_ref, {}
             changed = True
             while changed:
                 changed = False
-                for rid, r in self.routes.items():
-                    if rid in prev_inv:
+                for rid in self.routes:
+                    target = self.route_target[rid]
+                    if (rid in prev_inv or target not in self.claims
+                            or target in est or target in prev_ref):
                         continue
-                    tgt = r.meta.get("target")
-                    if tgt not in self.claims or tgt in est or tgt in prev_ref:
-                        continue
-                    reqs = [q for q in r.get_list("requires") if q in self.claims]
-                    if all(q in est for q in reqs):
-                        est.add(tgt)
-                        prov[tgt] = rid
+                    if all(q in est for q in self.route_requires[rid]):
+                        est.add(target)
+                        prov[target] = rid
                         changed = True
-            refuted = {cid for cid, c in self.claims.items()
-                       if any(refuter in est
-                              for refuter in c.get_list("refuted_by"))}
-            inv = {r for c, rs in inv_map.items() if c in est for r in rs}
-            inv.update(rid for rid, r in self.routes.items()
-                       if r.meta.get("target") in refuted
-                       or any(q in refuted for q in r.get_list("requires")))
+            refuted = {target for refuter in est
+                       for target in self.refutes_from.get(refuter, [])}
+            inv = {rid for claim in est
+                   for rid in self.invalidates_from.get(claim, [])}
+            inv.update(rid for claim in refuted
+                       for rid in (self.routes_into.get(claim, [])
+                                   + self.required_by.get(claim, [])))
             state = (frozenset(inv), frozenset(refuted))
             if inv == prev_inv and refuted == prev_ref:
                 return est, refuted, inv, prov, True
@@ -587,13 +579,26 @@ class Graph:
         return est, prev_ref, prev_inv, prov, False
 
     def compile(self):
+        self.route_target = {}
+        self.route_requires = {}
         for rid, r in self.routes.items():
             tgt = r.meta.get("target")
+            self.route_target[rid] = tgt
+            self.route_requires[rid] = [q for q in r.get_list("requires")
+                                        if q in self.claims]
             if isinstance(tgt, str) and tgt in self.claims:
                 self.routes_into.setdefault(tgt, []).append(rid)
-            for q in r.get_list("requires"):
-                if q in self.claims:
-                    self.required_by.setdefault(q, []).append(rid)
+            for q in self.route_requires[rid]:
+                self.required_by.setdefault(q, []).append(rid)
+        self.invalidates_from = {
+            cid: [rid for rid in claim.get_list("invalidates")
+                  if rid in self.routes]
+            for cid, claim in self.claims.items()}
+        self.refutes_from = {}
+        for target, claim in self.claims.items():
+            for refuter in claim.get_list("refuted_by"):
+                if refuter in self.claims:
+                    self.refutes_from.setdefault(refuter, []).append(target)
 
         est, refuted, inv, prov, stable = self._solve()
         if not stable:
@@ -773,7 +778,7 @@ class Graph:
             self.errors.append(("warning", "cycle",
                                 f"dependency cycle through claims: {' -> '.join(path)}"))
 
-    def to_json(self):
+    def to_json(self, source_manifest=None):
         out = {"generated_by": "cairn build", "rg": 2, "nodes": {}, "derived": {}}
         for i, n in sorted(self.nodes.items()):
             out["nodes"][i] = {"kind": n.kind, "title": n.title, "path": n.relpath,
@@ -786,14 +791,97 @@ class Graph:
                           "internal_open": self.internal_open,
                           "claim_impact": self.claim_impact,
                           "provenance": self.provenance}
+        out["cache"] = {"format": CACHE_FORMAT, "cairn": __version__,
+                        "sources": source_manifest}
         return out
 
 
-def compile_graph(research_dir=RESEARCH_DIR, repo=REPO):
+def research_manifest(research_dir=RESEARCH_DIR):
+    """Cheap exact-enough source identity for cache invalidation."""
+    try:
+        entries = []
+        with os.scandir(research_dir) as scan:
+            for entry in scan:
+                if (not entry.name.endswith(".md")
+                        or entry.name in NON_NODE_FILES or not entry.is_file()):
+                    continue
+                st = entry.stat()
+                entries.append([entry.name, st.st_mtime_ns, st.st_size, st.st_ino])
+        return sorted(entries)
+    except OSError:
+        return None
+
+
+def read_graph_cache(research_dir=RESEARCH_DIR, repo=REPO):
+    if (os.path.abspath(research_dir) != os.path.abspath(RESEARCH_DIR)
+            or os.path.abspath(repo) != os.path.abspath(REPO)):
+        return None
+    path = os.path.join(CACHE_DIR, "nodes.sqlite3")
+    db = None
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        metadata = dict(db.execute("SELECT key, value FROM cache_meta"))
+        cached_manifest = json.loads(metadata.get("sources", "null"))
+        if (int(metadata.get("format", 0)) != CACHE_FORMAT
+                or metadata.get("cairn") != __version__
+                or cached_manifest != research_manifest(research_dir)):
+            return None
+        nodes = {}
+        for nid, kind, relpath, meta_json, body in db.execute(
+                "SELECT id, kind, relpath, meta, body FROM nodes"):
+            meta = json.loads(meta_json)
+            if kind not in KINDS or not isinstance(meta, dict):
+                return None
+            nodes[nid] = Node(meta, body, os.path.join(repo, relpath), kind, repo)
+        cached_errors = [tuple(row) for row in db.execute(
+            "SELECT severity, rule, message FROM errors")]
+    except (OSError, sqlite3.Error, ValueError):
+        return None
+    finally:
+        if db is not None:
+            db.close()
+    graph = Graph(nodes, [], repo)
+    graph.errors[:] = cached_errors
+    graph.compile_errors = list(cached_errors)
+    graph.source_manifest = cached_manifest
+    graph.cache_hit = True
+    return graph, graph.errors
+
+
+def compile_graph(research_dir=RESEARCH_DIR, repo=REPO, use_cache=True):
+    started = time.perf_counter_ns()
+    if use_cache:
+        cached = read_graph_cache(research_dir, repo)
+        if cached is not None:
+            graph, _ = cached
+            TELEMETRY_EXTRA.update({
+                "cache_hit": True, "nodes": len(graph.nodes),
+                "claims": len(graph.claims), "routes": len(graph.routes),
+                "phases_ms": {"cache": round(
+                    (time.perf_counter_ns() - started) / 1_000_000, 2)}})
+            return cached
+    load_started = time.perf_counter_ns()
+    before = research_manifest(research_dir)
     errors = []
     nodes = load_nodes(errors, research_dir, repo)
+    load_ms = (time.perf_counter_ns() - load_started) / 1_000_000
+    lint_started = time.perf_counter_ns()
     lint_nodes(nodes, errors, repo)
-    return Graph(nodes, errors, repo), errors
+    lint_ms = (time.perf_counter_ns() - lint_started) / 1_000_000
+    solve_started = time.perf_counter_ns()
+    graph = Graph(nodes, errors, repo)
+    solve_ms = (time.perf_counter_ns() - solve_started) / 1_000_000
+    graph.compile_errors = list(errors)
+    after = research_manifest(research_dir)
+    graph.source_manifest = before if before == after else None
+    graph.cache_hit = False
+    TELEMETRY_EXTRA.update({
+        "cache_hit": False, "nodes": len(graph.nodes),
+        "claims": len(graph.claims), "routes": len(graph.routes),
+        "phases_ms": {"load": round(load_ms, 2), "lint": round(lint_ms, 2),
+                      "solve": round(solve_ms, 2), "total": round(
+                          (time.perf_counter_ns() - started) / 1_000_000, 2)}})
+    return graph, errors
 
 
 LINT_COUNTS = {}  # rule -> times fired this run, for telemetry
@@ -848,9 +936,13 @@ def similar_nodes(text, nodes, kinds=None, limit=5, threshold=0.5, exclude=(),
     return sorted(out, key=lambda x: (-x[0], x[1].id))[:limit]
 
 
-def semantic_vectors(claims):
-    """TF-IDF vectors (unigrams + bigrams) over title+body, shared by the
-    site layout and the near-established hints so both see one geometry."""
+def semantic_vectors(claims, only_ids=None, titles_only=False):
+    """TF-IDF vectors over titles or complete claim text.
+
+    Validation and theorem-neighbor hints use full text. The site's invisible
+    layout links use titles: bodies make a large graph's transient vector
+    index much larger while mostly clustering shared proof vocabulary.
+    """
     import math
 
     def feats(text):
@@ -858,12 +950,19 @@ def semantic_vectors(claims):
                  if (len(w) > 2 or w == "no") and w not in TEXT_STOPWORDS]
         return set(words) | {a + "_" + b for a, b in zip(words, words[1:])}
 
-    docs = {cid: feats(c.title + " " + c.body) for cid, c in claims.items()}
+    selected = set(claims) if only_ids is None else set(only_ids)
+    def claim_text(claim):
+        return claim.title if titles_only else claim.title + " " + claim.body
+
+    docs = {cid: feats(claim_text(claims[cid]))
+            for cid in selected}
+    relevant = set().union(*docs.values()) if docs else set()
     df = {}
-    for toks in docs.values():
-        for t in toks:
+    for cid, claim in claims.items():
+        toks = docs[cid] if cid in docs else feats(claim_text(claim))
+        for t in toks & relevant:
             df[t] = df.get(t, 0) + 1
-    N = max(1, len(docs))
+    N = max(1, len(claims))
     # program-wide jargon carries no signal — but on a young graph a
     # proportional cutoff discards everything (in five claims, any word used
     # twice is "program-wide"), and two identical claims share every word by
@@ -872,8 +971,12 @@ def semantic_vectors(claims):
     # smoothed idf: log(N/df) is exactly 0 for a token every document has,
     # so an unsmoothed weighting gives two identical claims a zero vector
     # and a cosine of 0 — the one pair it most needs to score 1
-    return {cid: {t: math.log(1 + N / df[t]) for t in toks if df[t] <= cutoff}
-            for cid, toks in docs.items()}
+    vectors = {}
+    for cid in list(docs):
+        toks = docs.pop(cid)
+        vectors[cid] = {t: math.log(1 + N / df[t])
+                        for t in toks if df[t] <= cutoff}
+    return vectors
 
 
 def cosine(u, v):
@@ -884,6 +987,59 @@ def cosine(u, v):
     du = math.sqrt(sum(w * w for w in u.values()))
     dv = math.sqrt(sum(w * w for w in v.values()))
     return num / (du * dv) if du and dv else 0.0
+
+
+def semantic_affinity(vecs, threshold=0.16, per_node=3,
+                      candidate_features=8, candidate_limit=32,
+                      candidate_posting=64):
+    """Bounded approximate neighbors for the site's invisible layout links.
+
+    Rare features nominate a small candidate pool, then the final weights use
+    exact cosine over the complete vectors. Common vocabulary is deliberately
+    ineligible to nominate a pair: it creates quadratic work and poor layout
+    signal, while still contributing to the score of a pair nominated by a
+    more discriminating feature.
+    """
+    import math
+    postings = {}
+    norms = {}
+    for cid, vector in vecs.items():
+        norms[cid] = math.sqrt(sum(weight * weight for weight in vector.values()))
+        for token in vector:
+            postings.setdefault(token, []).append(cid)
+    pairs = []
+    for cid, vector in vecs.items():
+        votes = {}
+        rare = sorted((token for token in vector
+                       if 1 < len(postings[token]) <= candidate_posting),
+                      key=lambda token: len(postings[token]))
+        for token in rare[:candidate_features]:
+            peers = postings[token]
+            weight = vector[token]
+            for other in peers:
+                if other > cid:
+                    votes[other] = votes.get(other, 0.0) + weight * vecs[other][token]
+        candidates = sorted(votes, key=lambda other: (votes[other], other),
+                            reverse=True)[:candidate_limit]
+        for other in candidates:
+            left, right = vector, vecs[other]
+            if len(right) < len(left):
+                left, right = right, left
+            dot = sum(weight * right.get(token, 0.0)
+                      for token, weight in left.items())
+            denom = norms[cid] * norms[other]
+            score = dot / denom if denom else 0.0
+            if score >= threshold:
+                pairs.append((score, cid, other))
+    pairs.sort(reverse=True)
+    counts, affinity = {}, []
+    for score, left, right in pairs:
+        if counts.get(left, 0) < per_node and counts.get(right, 0) < per_node:
+            affinity.append({"a": left, "b": right,
+                             "w": round(min(1.0, score), 2)})
+            counts[left] = counts.get(left, 0) + 1
+            counts[right] = counts.get(right, 0) + 1
+    return affinity
 
 
 NEGATIONS = {"no", "not", "non", "never", "cannot", "neither", "nor",
@@ -916,51 +1072,47 @@ DUP_LEXICAL, DUP_MEANING = 0.6, 0.25
 HINT_LIMIT = 10  # a wall of hints is read as one hint and then skipped
 
 
-def duplicate_score(a, b, ta, tb, vecs):
-    """How confusable are these two claims? None if not worth asking.
-
-    Wording alone flags whole families. An id is a slug of its own title,
-    so scoring `title + id` double-counts every shared word and lets a
-    family prefix (`literal-mark-quotient-*`) outscore the words that
-    actually differ; and dividing by the SHORTER token set gave a perfect
-    1.0 to any claim whose words were a subset of its sibling's. So:
-    symmetric overlap (Jaccard) on titles alone, then a TF-IDF gate over
-    title+body, where the vocabulary every node in the program shares is
-    discounted away. Sharing a subject is not being the same claim.
-    """
-    if not ta or not tb or len(ta & tb) < 2:
-        return None
-    if len(ta & tb) / len(ta | tb) < DUP_LEXICAL:
-        return None
-    # a negation is one short word inside a long shared phrase, and it
-    # inverts the proposition: `X is MF` and `X is not MF` are the most
-    # similar strings in the graph and the least duplicate
-    if _negation_signature(a.title + " " + a.id) != _negation_signature(b.title + " " + b.id):
-        return None
-    score = cosine(vecs.get(a.id, {}), vecs.get(b.id, {}))
-    return round(score, 2) if score >= DUP_MEANING else None
-
-
 def duplicate_findings(graph, only_ids=None, vecs=None):
     """(claim, candidate, score) triples not answered by distinct_from."""
-    if vecs is None:
-        vecs = semantic_vectors(graph.claims)
     toks = {cid: _tokens(c.title) for cid, c in graph.claims.items()}
-    out = []
+    postings = {}
+    for cid, words in toks.items():
+        for word in words:
+            postings.setdefault(word, []).append(cid)
+    candidates = []
     for cid, c in graph.claims.items():
         if only_ids is not None and cid not in only_ids:
             continue
         df = c.meta.get("distinct_from") or {}
-        for oid, cand in graph.claims.items():
-            if oid == cid:
+        overlap = {}
+        for word in toks[cid]:
+            for oid in postings[word]:
+                overlap[oid] = overlap.get(oid, 0) + 1
+        for oid in sorted(overlap):
+            if oid == cid or overlap[oid] < 2:
                 continue
+            cand = graph.claims[oid]
             if oid in df or cid in (cand.meta.get("distinct_from") or {}):
                 continue
             if oid < cid and (only_ids is None or oid in only_ids):
                 continue  # report each unordered pair once
-            score = duplicate_score(c, cand, toks[cid], toks[oid], vecs)
-            if score is not None:
-                out.append((cid, oid, score))
+            if len(toks[cid] & toks[oid]) / len(toks[cid] | toks[oid]) < DUP_LEXICAL:
+                continue
+            if (_negation_signature(c.title + " " + c.id)
+                    != _negation_signature(cand.title + " " + cand.id)):
+                continue
+            candidates.append((cid, oid))
+    if not candidates:
+        return []
+    if vecs is None:
+        involved = {cid for pair in candidates for cid in pair}
+        vecs = semantic_vectors(graph.claims, only_ids=involved)
+    out = []
+    for cid, oid in candidates:
+        score = cosine(vecs.get(cid, {}), vecs.get(oid, {}))
+        score = round(score, 2) if score >= DUP_MEANING else None
+        if score is not None:
+            out.append((cid, oid, score))
     return out
 
 
@@ -2146,7 +2298,7 @@ def linkify_prose(html_str):
     return "".join(out)
 
 
-def md_to_html(md, ids=()):
+def md_to_html(md, ids=(), tex_cache=None):
     out, in_code, in_list, para = [], False, False, []
     fence = [False]  # is the open fence a math fence?
     fence_buf = []
@@ -2158,7 +2310,12 @@ def md_to_html(md, ids=()):
 
         def hold(m):
             raw = m.group(1)
-            el = tex_span(raw, ids)
+            if tex_cache is not None and raw in tex_cache:
+                el = tex_cache[raw]
+            else:
+                el = tex_span(raw, ids)
+                if tex_cache is not None:
+                    tex_cache[raw] = el
             held.append(el or "<code>"
                         + linkify_prose(html.escape(raw, quote=False))
                         + "</code>")
@@ -3426,7 +3583,7 @@ def source_link(web, ref, path):
             f'rel="noopener">{mark}<span>View source on {name}</span></a>')
 
 
-def write_file_pages(ids, web, ref):
+def write_file_pages(ids, web, ref, tex_cache):
     """Render every referenced repository file as a page on this site.
 
     Markdown is rendered, so a note reached from a claim gets the same typeset
@@ -3452,7 +3609,7 @@ def write_file_pages(ids, web, ref):
                     f"<p class='muted'>{src}</p>")
             if path.lower().endswith(".md"):
                 body = text.split("---", 2)[-1] if text.startswith("---") else text
-                rendered = autolink(md_to_html(body, ids), ids)
+                rendered = autolink(md_to_html(body, ids, tex_cache), ids)
             else:
                 rows = []
                 for k, ln in enumerate(text.split("\n"), 1):
@@ -3477,6 +3634,15 @@ def generate_site(graph, locks):
     web, ref = _web_root(), _web_ref()
     # index = the graph, full viewport
     idset = set(graph.nodes)
+    rendered_bodies = {}
+    tex_cache = {}
+
+    def render_body(body):
+        if body not in rendered_bodies:
+            rendered_bodies[body] = autolink(
+                md_to_html(body, idset, tex_cache), idset)
+        return rendered_bodies[body]
+
     depths = goal_depths(graph)
     data = {"claims": [], "links": [], "junctions": [], "dead": [], "affinity": [],
             "routes": {}, "maxDepth": max(depths.values(), default=0)}
@@ -3495,7 +3661,7 @@ def generate_site(graph, locks):
             "into": graph.routes_into.get(cid, []),
             "needs": graph.required_by.get(cid, []),
             "kills": [r for r in c.get_list("invalidates") if r in graph.routes],
-            "html": autolink(md_to_html(c.body, idset), idset)})
+            "html": render_body(c.body)})
     # what an open claim would buy, from the same solver the CLI uses.
     for rec in data["claims"]:
         if rec["status"] != "OPEN":
@@ -3527,7 +3693,7 @@ def generate_site(graph, locks):
             "reasons": list(r.status_reasons),
             "blocked": list(getattr(r, "blocked_on", []) or []),
             "arts": artifact_links(r.get_list("artifacts"), web, ref),
-            "html": autolink(md_to_html(r.body, idset), idset)}
+            "html": render_body(r.body)}
         if not reqs:
             if dead:
                 data["dead"].append({"route": rid, "target": tgt,
@@ -3540,22 +3706,8 @@ def generate_site(graph, locks):
             data["junctions"].append({**rec, "requires": reqs})
     # semantic affinity: TF-IDF cosine over statements -> invisible
     # attraction links, so conceptually close claims sit close on screen
-    vecs = semantic_vectors(graph.claims)
-    _cos = cosine
-    cids = list(vecs)
-    pairs = []
-    for i in range(len(cids)):
-        for j in range(i + 1, len(cids)):
-            w = _cos(vecs[cids[i]], vecs[cids[j]])
-            if w >= 0.16:
-                pairs.append((w, cids[i], cids[j]))
-    pairs.sort(reverse=True)
-    percap = {}
-    for w, x, y in pairs:
-        if percap.get(x, 0) < 3 and percap.get(y, 0) < 3:
-            data["affinity"].append({"a": x, "b": y, "w": round(min(1.0, w), 2)})
-            percap[x] = percap.get(x, 0) + 1
-            percap[y] = percap.get(y, 0) + 1
+    data["affinity"] = semantic_affinity(
+        semantic_vectors(graph.claims, titles_only=True), threshold=0.45)
     est = sum(1 for c in graph.claims.values() if c.status == "ESTABLISHED")
     ref = sum(1 for c in graph.claims.values() if c.status == "REFUTED")
     stats = (f"{len(graph.claims)} claims · {est} established · {ref} refuted · "
@@ -3630,11 +3782,11 @@ def generate_site(graph, locks):
                          if href else f"<li class='art'>{lab}</li>")
             B.append("</ul>")
         B.append("<h2>Statement</h2>")
-        B.append(autolink(md_to_html(n.body, idset), idset)
-                 if n.body else "<p class='muted'>(no body)</p>")
+        B.append(render_body(n.body) if n.body
+                 else "<p class='muted'>(no body)</p>")
         with open(os.path.join(SITE_DIR, f"{nid}.html"), "w", encoding="utf-8") as f:
             f.write(page(f"{nid}", "\n".join(B)))
-    write_file_pages(idset, web, ref)
+    write_file_pages(idset, web, ref, tex_cache)
     return SITE_DIR
 
 
@@ -3875,16 +4027,64 @@ def missing_attempts(body):
 # Commands
 # ---------------------------------------------------------------------------
 
+def write_node_cache(graph):
+    """Atomically persist parsed source so query commands avoid reparsing."""
+    path = os.path.join(CACHE_DIR, "nodes.sqlite3")
+    fd, tmp = tempfile.mkstemp(prefix="nodes-", suffix=".sqlite3.tmp",
+                               dir=CACHE_DIR)
+    os.close(fd)
+    db = None
+    try:
+        db = sqlite3.connect(tmp)
+        db.executescript("""
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            CREATE TABLE cache_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE nodes (
+                id TEXT PRIMARY KEY, kind TEXT NOT NULL, relpath TEXT NOT NULL,
+                meta TEXT NOT NULL, body TEXT NOT NULL);
+            CREATE TABLE errors (
+                severity TEXT NOT NULL, rule TEXT NOT NULL, message TEXT NOT NULL);
+        """)
+        db.executemany("INSERT INTO cache_meta VALUES (?, ?)", [
+            ("format", str(CACHE_FORMAT)), ("cairn", __version__),
+            ("sources", json.dumps(graph.source_manifest,
+                                   separators=(",", ":")))])
+        db.executemany("INSERT INTO nodes VALUES (?, ?, ?, ?, ?)", (
+            (nid, node.kind, node.relpath,
+             json.dumps(node.meta, separators=(",", ":")), node.body)
+            for nid, node in graph.nodes.items()))
+        db.executemany("INSERT INTO errors VALUES (?, ?, ?)",
+                       graph.compile_errors)
+        db.commit()
+        db.close()
+        db = None
+        os.replace(tmp, path)
+    finally:
+        if db is not None:
+            db.close()
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
 def write_outputs(graph):
     os.makedirs(CACHE_DIR, exist_ok=True)
-    with open(os.path.join(CACHE_DIR, "graph.json"), "w", encoding="utf-8") as f:
-        json.dump(graph.to_json(), f, indent=1)
+    cache_path = os.path.join(CACHE_DIR, "graph.json")
+    fd, tmp_path = tempfile.mkstemp(prefix="graph-", suffix=".json.tmp",
+                                    dir=CACHE_DIR, text=True)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(graph.to_json(graph.source_manifest), f,
+                  separators=(",", ":"))
+    os.replace(tmp_path, cache_path)
+    write_node_cache(graph)
     with open(os.path.join(RESEARCH_DIR, "FRONTIER.md"), "w", encoding="utf-8") as f:
         f.write(generate_frontier_md(graph, all_locks()))
 
 
 def cmd_check(args):
-    graph, errors = compile_graph()
+    graph, errors = compile_graph(use_cache=False)
     graph_valid = not any(sev == "error" for sev, _, _ in errors)
     changed = changed_research_files()
     only = None
@@ -3984,7 +4184,7 @@ def cmd_check(args):
 def cmd_preview(args):
     old, _, tmp = head_graph()
     shutil.rmtree(tmp, ignore_errors=True)
-    new, errors = compile_graph()
+    new, errors = compile_graph(use_cache=False)
     L = ["PROPOSED GRAPH CHANGE (working tree vs HEAD)", ""]
     delta = {"added": [], "removed": [], "status_changed": [], "dup_warnings": [],
              "direct_proof_assertions": [], "frontier_added": [], "frontier_removed": []}
@@ -4345,6 +4545,7 @@ def cmd_status(args):
         L += [f"  🔒 {nid} — {fmt_remaining(lk)}" for nid, lk in locks.items()]
     payload = {"status": "ok", "claims": len(graph.claims), "established": est,
                "refuted": ref,
+               "cache_hit": graph.cache_hit,
                "routes": len(graph.routes), "invalidated": len(graph.invalidated),
                "frontier": len(actionable), "root_frontier": len(graph.frontier),
                "toward_goals": len(toward),
@@ -4474,12 +4675,16 @@ def cmd_why(args):
 TELEMETRY_EXTRA = {}  # commands may deposit counters (e.g. banner sizes)
 
 
-def record_telemetry(cmd, argv, code, ms):
+def record_telemetry(cmd, argv, code, ms, cpu_ms):
     try:
         path = telemetry_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        rss_divisor = 1024 * 1024 if sys.platform == "darwin" else 1024
         entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "cmd": cmd,
-                 "argv": argv, "exit": code, "ms": ms,
+                 "argv": argv, "exit": code, "ms": ms, "cpu_ms": cpu_ms,
+                 "max_rss_mb": round(usage.ru_maxrss / rss_divisor, 2),
+                 "version": __version__,
                  # which copy of the program ran this. The log is shared
                  # across clones now, so without it "who is stuck" has no
                  # answer; unlike an agent name it costs nobody anything.
@@ -4527,25 +4732,53 @@ def cmd_telemetry(args):
         return emit(args, {"status": "ok", "total": 0}, "(no telemetry yet)")
     per_cmd, per_exit, per_rule, per_repo = {}, {}, {}, {}
     for e in entries:
-        c = per_cmd.setdefault(e["cmd"], {"n": 0, "errors": 0, "ms": []})
+        c = per_cmd.setdefault(e["cmd"], {
+            "n": 0, "errors": 0, "ms": [], "cpu_ms": [], "rss_mb": [],
+            "cache_hits": 0, "cache_misses": 0, "phases": {}})
         c["n"] += 1
         c["errors"] += e["exit"] != 0
         c["ms"].append(e.get("ms", 0))
+        if "cpu_ms" in e:
+            c["cpu_ms"].append(e["cpu_ms"])
+        if "max_rss_mb" in e:
+            c["rss_mb"].append(e["max_rss_mb"])
+        extra = e.get("extra", {})
+        if "cache_hit" in extra:
+            c["cache_hits" if extra["cache_hit"] else "cache_misses"] += 1
+        for phase, ms in (extra.get("phases_ms") or {}).items():
+            c["phases"].setdefault(phase, []).append(ms)
         per_exit[str(e["exit"])] = per_exit.get(str(e["exit"]), 0) + 1
         who = e.get("agent") or e.get("from")
         if who:
             per_repo[who] = per_repo.get(who, 0) + 1
-        for rule, n in (e.get("extra", {}).get("lint") or {}).items():
+        for rule, n in (extra.get("lint") or {}).items():
             per_rule[rule] = per_rule.get(rule, 0) + n
     unused = sorted(set(COMMANDS) - {"telemetry", "build", "relevant"} - set(per_cmd))
+
+    def percentile(values, fraction):
+        if not values:
+            return None
+        ordered = sorted(values)
+        return round(ordered[int((len(ordered) - 1) * fraction)], 2)
+
     L = [f"{len(entries)} invocations, {entries[0]['ts']} .. {entries[-1]['ts']}", "",
-         f"{'command':<12} {'n':>5} {'errs':>5} {'med ms':>7}"]
+         f"{'command':<12} {'n':>5} {'errs':>5} {'p50':>8} {'p90':>8} {'p99':>8} {'cache':>11}"]
     stats = {}
     for cmd in sorted(per_cmd, key=lambda c: -per_cmd[c]["n"]):
         c = per_cmd[cmd]
-        med = sorted(c["ms"])[len(c["ms"]) // 2]
-        stats[cmd] = {"n": c["n"], "errors": c["errors"], "median_ms": med}
-        L.append(f"{cmd:<12} {c['n']:>5} {c['errors']:>5} {med:>7}")
+        p50, p90, p99 = (percentile(c["ms"], q) for q in (0.5, 0.9, 0.99))
+        cache_n = c["cache_hits"] + c["cache_misses"]
+        cache = f"{c['cache_hits']}/{cache_n}" if cache_n else "-"
+        row = {"n": c["n"], "errors": c["errors"], "p50_ms": p50,
+               "p90_ms": p90, "p99_ms": p99,
+               "p50_cpu_ms": percentile(c["cpu_ms"], 0.5),
+               "p90_rss_mb": percentile(c["rss_mb"], 0.9),
+               "cache_hits": c["cache_hits"], "cache_misses": c["cache_misses"],
+               "phase_p50_ms": {phase: percentile(values, 0.5)
+                                for phase, values in sorted(c["phases"].items())}}
+        stats[cmd] = row
+        L.append(f"{cmd:<12} {c['n']:>5} {c['errors']:>5} "
+                 f"{p50:>8} {p90:>8} {p99:>8} {cache:>11}")
     L += ["", "exit codes: " + ", ".join(f"{k}: {v}" for k, v in sorted(per_exit.items()))]
     if per_rule:
         L += ["", "lint findings by rule — what the graph actually trips on:"]
@@ -4642,13 +4875,17 @@ def main():
         sys.exit(EXIT_USAGE)
     args = p.parse_args()
     fn = COMMANDS[args.cmd]
-    t0 = time.time()
+    t0 = time.perf_counter_ns()
+    cpu0 = time.process_time_ns()
     try:
         code = fn(args)
     except BaseException as e:
         code = e.code if isinstance(e, SystemExit) and isinstance(e.code, int) else 1
         if args.cmd != "telemetry":
-            record_telemetry(args.cmd, sys.argv[1:], code, int((time.time() - t0) * 1000))
+            record_telemetry(
+                args.cmd, sys.argv[1:], code,
+                round((time.perf_counter_ns() - t0) / 1_000_000, 2),
+                round((time.process_time_ns() - cpu0) / 1_000_000, 2))
         if (isinstance(e, SystemExit) and isinstance(e.code, str)
                 and getattr(args, "json", False)):
             print(json.dumps({"status": "error", "error": e.code}, indent=1))
@@ -4656,7 +4893,10 @@ def main():
             sys.exit(1)
         raise
     if args.cmd != "telemetry":
-        record_telemetry(args.cmd, sys.argv[1:], code, int((time.time() - t0) * 1000))
+        record_telemetry(
+            args.cmd, sys.argv[1:], code,
+            round((time.perf_counter_ns() - t0) / 1_000_000, 2),
+            round((time.process_time_ns() - cpu0) / 1_000_000, 2))
     sys.exit(code)
 
 

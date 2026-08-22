@@ -100,7 +100,7 @@ that justify the node.
 |---|---|
 | `research/*.md` | **Canonical.** The authoritative graph. Humans and agents edit these directly with their normal tools; the CLI never writes them. |
 | `research/artifacts/` | Substantial proof artifacts routes may cite. |
-| `notes/` | Scratch, session logs, thinking out loud. Searchable (`cairn search --notes`) but **noncanonical**: notes can never change compiled state, and canonical files may not cite them as justification (lint enforces this). |
+| `notes/` | Prose corpus: derivations, audits, dead ends, and session logs. Searchable (`cairn search --notes`) and citable through `artifacts:`, but never compiled: only claims and routes change graph state. |
 | `.cairn/` | This copy's machine state — compile cache, generated site. Never commit it. |
 | `$XDG_STATE_HOME/cairn/<owner>-<repo>/` | The **program's** state — leases and the usage log — keyed off the git remote, so every clone and worktree of the project shares one. Under `.cairn/` a lease was invisible to every worker it should warn, and the log was thrown away with the throwaway clone that wrote it. |
 
@@ -138,8 +138,10 @@ refutation are errors. It then derives:
   and **circular reasoning** — but never `A ⟺ B`, which is the kernel's
   own way to write an equivalence.
 
-Outputs: `.cairn/cache/graph.json` (machine) and `research/FRONTIER.md`
-(human dashboard, regenerated every run).
+Outputs: `.cairn/cache/graph.json` (portable derived state),
+`.cairn/cache/nodes.sqlite3` (validated parsed-source cache), and
+`research/FRONTIER.md` (human dashboard, regenerated every run). Query commands
+reuse the SQLite cache only when the complete source manifest is unchanged.
 
 ## The CLI
 
@@ -158,7 +160,7 @@ Read-only over canonical files and deliberately small — twelve commands:
 | `lock <id> --ttl 45m` | claim a hole (advisory, identity-free); every reply lists the full active-lock roster |
 | `unlock <id>` | release a claim |
 | `site` | static HTML site into `.cairn/site/` (`--serve` to preview) |
-| `telemetry` | usage summary: what workers actually run, what they never touch, which lint rule the graph keeps tripping on, and which copy of the project each invocation came from |
+| `telemetry` | usage summary with p50/p90/p99 wall time, CPU, peak RSS, cache hit rates, compiler phases, lint rules, and originating checkout |
 
 Exit codes are stable for scripting: `0` ok, `2` duplicate candidates,
 `3` already claimed, `4` invalid graph, `64` usage error, `1` runtime
@@ -291,8 +293,8 @@ Claims are advisory TTL flags in `.cairn/locks/`, not enforcement, and
 they carry no identity: everyone is one team, a claim means "someone is
 on this," and the TTL cleans up after crashes. Telemetry
 (`.cairn/telemetry.jsonl`, one record per invocation — command, argv,
-exit, duration, no attribution) is observability only and can never
-affect research state.
+exit, wall/CPU time, peak RSS, cache/compiler phases, no personal
+attribution) is observability only and can never affect research state.
 
 ## The site
 
