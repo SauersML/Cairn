@@ -151,6 +151,25 @@ class FrontierAndLockTests(Project):
         self.assertIn("malformed node id", r.stderr)
 
 
+class FrontierNecessityTests(Project):
+    def test_and_or_dataflow_finds_all_and_only_unavoidable_holes(self):
+        claim(self.root, "goal", "Goal", goal=True)
+        for nid in ("common", "left", "right"):
+            claim(self.root, nid, nid.title())
+        route(self.root, "goal-left", "First proof plan", "goal",
+              ["common", "left"])
+        route(self.root, "goal-right", "Second proof plan", "goal",
+              ["common", "right"])
+        graph = compile_at(self.root)
+        connected, necessary, stable = cairn.monotone_frontier_necessity(
+            graph, "goal", ["common", "left", "right"])
+        self.assertTrue(stable)
+        self.assertTrue(connected)
+        self.assertEqual(necessary, {"common"})
+        view = cairn.frontier_view(graph)[0][0]
+        self.assertEqual(view["necessary"], {"common"})
+
+
 class RefutationTests(Project):
     def setUp(self):
         super().setUp()

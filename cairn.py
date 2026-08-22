@@ -426,7 +426,26 @@ def load_nodes(errors, research_dir=RESEARCH_DIR, relroot=REPO):
     return nodes
 
 
+def existing_git_objects(repo, objects):
+    """Return object expressions resolved by one `git cat-file` process."""
+    wanted = list(dict.fromkeys(objects))
+    if not wanted:
+        return set()
+    proc = subprocess.run(
+        ["git", "-C", repo, "cat-file", "--batch-check"],
+        input="\n".join(wanted) + "\n", capture_output=True, text=True)
+    if proc.returncode != 0:
+        return set()
+    return {obj for obj, line in zip(wanted, proc.stdout.splitlines())
+            if not line.endswith(" missing") and len(line.split()) >= 3}
+
+
 def lint_nodes(nodes, errors, repo=REPO):
+    pinned = [p for node in nodes.values() for p in node.get_list("artifacts")
+              if isinstance(p, str) and ":" in p
+              and not os.path.exists(os.path.join(repo, p))]
+    existing_pins = existing_git_objects(repo, pinned)
+
     def ref(node, key, val, want_kind):
         if not isinstance(val, str) or not ID_RE.match(val):
             errors.append(("error", "ref", f"{node.relpath}: {key}: malformed id {val!r}"))
@@ -448,10 +467,7 @@ def lint_nodes(nodes, errors, repo=REPO):
             path_part = p
             if not os.path.exists(os.path.join(repo, p)):
                 # a <rev>:<path> entry pins a file that left the working tree
-                pinned = (":" in p and subprocess.run(
-                    ["git", "-C", repo, "cat-file", "-e", p],
-                    capture_output=True).returncode == 0)
-                if not pinned:
+                if p not in existing_pins:
                     errors.append(("error", "artifact", f"{node.relpath}: artifact not found: {p} "
                                    "(want a working-tree path or a <rev>:<path> pin)"))
                     continue
@@ -1192,6 +1208,63 @@ def actionable_frontier(graph):
     return sorted(holes, key=lambda h: (-graph.claim_impact[h], h))
 
 
+def monotone_frontier_necessity(graph, gid, holes):
+    """Return (connected, necessary, stable) for one obstruction-free cone.
+
+    The old implementation solved the entire graph once per omitted hole.
+    Necessity in a monotone AND/OR graph is a dataflow property: requirements
+    combine by union and alternative routes combine by intersection. Integer
+    bitsets compute every hole together after one connectivity solve.
+    """
+    if not holes:
+        return None, set(), True
+    positions = {h: i for i, h in enumerate(holes)}
+    universe = (1 << len(holes)) - 1
+    established, _, _, _, stable = graph._solve(forced=frozenset(holes))
+    if not stable:
+        return None, set(), False
+    cone = goal_cone(graph, gid)
+    connected = established & cone
+    if gid not in connected:
+        return False, set(), True
+
+    must = {cid: 0 for cid in graph.established if cid in connected}
+    must.update({h: 1 << positions[h] for h in holes})
+    for cid in connected:
+        must.setdefault(cid, universe)
+
+    for _ in range(len(connected) + 1):
+        changed = False
+        for cid in connected:
+            if cid in graph.established or cid in positions:
+                continue
+            candidates = []
+            for rid in graph.routes_into.get(cid, ()):
+                route = graph.routes[rid]
+                if route.status == "INVALIDATED":
+                    continue
+                reqs = [q for q in route.get_list("requires")
+                        if q in graph.claims]
+                if all(q in connected for q in reqs):
+                    bits = 0
+                    for q in reqs:
+                        bits |= must[q]
+                    candidates.append(bits)
+            if candidates:
+                bits = candidates[0]
+                for alternative in candidates[1:]:
+                    bits &= alternative
+                if bits != must[cid]:
+                    must[cid] = bits
+                    changed = True
+        if not changed:
+            break
+
+    goal_bits = must[gid]
+    necessary = {h for h, i in positions.items() if goal_bits & (1 << i)}
+    return True, necessary, True
+
+
 def frontier_view(graph, only_goal=None, with_necessity=True):
     """Group open holes by the goals they can serve.
 
@@ -1220,21 +1293,13 @@ def frontier_view(graph, only_goal=None, with_necessity=True):
                 graph.claims[q].get_list("invalidates")
                 or graph.claims[q].get_list("refuted_by") for q in cone)
             if cone_holes and with_necessity and not g["obstruction_sensitive"]:
-                cone_set = set(cone_holes)
-                base, _, _, _, stable = graph._solve(forced=frozenset(cone_set))
+                connected, necessary, stable = monotone_frontier_necessity(
+                    graph, gid, cone_holes)
                 if not stable:
                     g["counterfactual_unstable"] = True
                 else:
-                    g["connected"] = gid in base
-                    if g["connected"]:
-                        for h in cone_holes:
-                            est, _, _, _, stable = graph._solve(
-                                forced=frozenset(cone_set - {h}))
-                            if not stable:
-                                g["counterfactual_unstable"] = True
-                                continue
-                            if gid not in est:
-                                g["necessary"].add(h)
+                    g["connected"] = connected
+                    g["necessary"] = necessary
                 g["holes"] = sorted(
                     cone_holes,
                     key=lambda h: (h not in g["necessary"],
