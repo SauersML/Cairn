@@ -258,8 +258,8 @@ class RefutationTests(Project):
         self.assertEqual(r.returncode, 0, r.stderr)
         index = (self.root / ".cairn" / "site" / "index.html").read_text(
             encoding="utf-8")
-        self.assertIn('"status": "REFUTED"', index)
-        self.assertIn('"refuted_by": ["counterexample"]', index)
+        self.assertIn('"status":"REFUTED"', index)
+        self.assertIn('"refuted_by":["counterexample"]', index)
         self.assertIn("proved false", index)
 
     def test_live_proof_and_refuter_are_a_hard_contradiction(self):
@@ -304,10 +304,22 @@ class CounterfactualTests(Project):
         r = run_cli(self.root, "site")
         self.assertEqual(r.returncode, 0, r.stderr)
         index = (self.root / ".cairn" / "site" / "index.html").read_text(encoding="utf-8")
-        self.assertIn('"lost": ["killer"]', index)
-        self.assertIn('"reopened": ["blocked-proof"]', index)
+        # Counterfactuals are now solved in the browser only when a panel is
+        # opened.  A large site must not solve every open claim during build
+        # or ship all of those derived lists in the landing page.
+        self.assertNotIn('"lost"', index)
+        self.assertNotIn('"reopened"', index)
+        self.assertIn("function counterfactual(id)", index)
+        self.assertIn("function givesFor(id)", index)
         self.assertIn("retracts", index)
         self.assertIn("reopens", index)
+        self.assertNotIn('"html":', index)
+        detail = json.loads((self.root / ".cairn" / "site" / "data" /
+                             "details-a.json").read_text(encoding="utf-8"))
+        self.assertIn("html", detail["antidote"])
+        self.assertTrue((self.root / ".cairn" / "site" / "data" /
+                         "search.json").is_file())
+        self.assertIn('<option value="focus">focused proof</option>', index)
         self.assertIn("d.gone=d.hidden", index)
         self.assertNotIn("d.orphan=d.type==='claim'", index)
 
@@ -328,7 +340,7 @@ class CounterfactualTests(Project):
         r = run_cli(self.root, "site")
         self.assertEqual(r.returncode, 0, r.stderr)
         index = (self.root / ".cairn" / "site" / "index.html").read_text(encoding="utf-8")
-        self.assertIn('"unstable": true', index)
+        self.assertIn("return {est:new Set(),inv:new Set(),stable:false}", index)
 
 
 if __name__ == "__main__":

@@ -298,14 +298,22 @@ attribution) is observability only and can never affect research state.
 
 ## The site
 
-`cairn site` renders a self-contained static site: an interactive graph
-of the whole program, laid out by the goal hierarchy — goals anchor the
-top band, every claim sits at its derivation distance from them, route
-junctions hang between their target and its prerequisites, failed
-routes (dashed red, toggleable) keep their obstructions beside them,
-and anything unreachable parks at the bottom. Goals ringed, established
-filled, plus a frontier/library panel and per-node pages with
-statements, derivations, and dead space.
+`cairn site` renders a static interactive graph. It opens on a focused
+proof view: the goal (or selected claim), a bounded number of its best
+incoming routes, and a configurable number of prerequisite levels. The
+header can widen that to the complete goal cone or the entire graph;
+the depth and route sliders narrow or widen the focused proof without
+changing graph state. Goals anchor the top band, route junctions hang
+between their target and prerequisites, and failed routes are dashed
+red and toggleable. Goals are ringed and established claims filled,
+with a frontier/library panel and per-node pages for the full record.
+
+Large graphs do not pay for the full record up front. The landing page
+contains compact graph structure only; statements and artifacts load
+from alphabetic shards when a panel opens, and the full-text corpus
+loads when search first opens. Layout, collision, label, and animation
+work runs only for the current view. Counterfactual impact is likewise
+computed only for the open claim whose panel is being read.
 
 A multi-premise route draws as a gate whose nose points at the claim it
 would establish: premises arrive at its flat back with small hollow

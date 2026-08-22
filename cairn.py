@@ -229,7 +229,7 @@ NON_NODE_FILES = {"README.md", "FRONTIER.md"}
 KINDS = ("claim", "route")
 CACHE_FORMAT = 2
 
-__version__ = "2.10.0"
+__version__ = "2.11.0"
 
 EXIT_OK, EXIT_DUP, EXIT_LEASE, EXIT_INVALID, EXIT_USAGE = 0, 2, 3, 4, 64
 
@@ -1789,19 +1789,25 @@ SEARCH_JS = r"""
 (function(){
 var $=function(i){return document.getElementById(i)};
 var pal=$('pal'),q=$('palq'),hits=$('palhits'),scrim=$('scrim'),cnt=$('palcount');
-var CORPUS=null,rows=[],cur=0;
-function plain(h){var d=document.createElement('div');d.innerHTML=h||'';
- return (d.textContent||'').replace(/\s+/g,' ').trim()}
+var CORPUS=null,loading=null,rows=[],cur=0;
 function corpus(){
  if(CORPUS)return CORPUS;
- CORPUS=[];
+ var base=[];
  for(var i=0;i<DATA.claims.length;i++){var c=DATA.claims[i];
-  CORPUS.push({id:c.id,kind:'claim',status:c.status,goal:c.goal,
-   title:c.title,text:plain(c.html)})}
+  base.push({id:c.id,kind:'claim',status:c.status,goal:c.goal,
+   title:c.title,text:''})}
  var R=DATA.routes||{};
- for(var k in R)CORPUS.push({id:k,kind:'route',status:R[k].dead?'INVALIDATED':'',
-   title:R[k].title||k,text:plain(R[k].html)});
- return CORPUS;
+ for(var k in R)base.push({id:k,kind:'route',status:R[k].status||'',
+   title:R[k].title||k,text:''});
+ return base;
+}
+function loadCorpus(){
+ if(CORPUS||loading)return loading;
+ loading=fetch('data/search.json').then(function(r){
+  if(!r.ok)throw new Error('search index unavailable');return r.json()})
+  .then(function(x){CORPUS=x;render();return x})
+  .catch(function(){return corpus()});
+ return loading;
 }
 function score(o,ql,ws){
  var id=o.id.toLowerCase(),ti=o.title.toLowerCase(),s=0,i;
@@ -1879,7 +1885,7 @@ function go(i){
   focusNode(window.__byId[o.id]);
 }
 function open_(){pal.classList.add('on');scrim.classList.add('on');
- q.value='';render();setTimeout(function(){q.focus()},20)}
+ q.value='';render();loadCorpus();setTimeout(function(){q.focus()},20)}
 function close(){pal.classList.remove('on');scrim.classList.remove('on');q.blur()}
 $('openSearch').onclick=open_;
 scrim.onclick=close;
@@ -2421,10 +2427,11 @@ __KATEX__
 :root{__PALETTE__;color-scheme:light}
 html,body{height:100%;margin:0}
 body{background:var(--paper);color:var(--ink);font:14px/1.55 __SANS__;
+display:flex;flex-direction:column;
 font-synthesis:none;text-rendering:geometricPrecision;
 -webkit-font-smoothing:antialiased}
 header{display:flex;align-items:center;gap:1.4em;padding:.7em 1.3em;
-border-bottom:1px solid var(--line);background:var(--paper)}
+border-bottom:1px solid var(--line);background:var(--paper);flex:none;flex-wrap:wrap}
 .stats{color:var(--mut2);font-size:11px;font-variant-numeric:tabular-nums;
 letter-spacing:.02em}
 #openSearch{margin-left:auto;display:flex;align-items:center;gap:.7em;
@@ -2443,7 +2450,14 @@ header button.lnk:hover{color:var(--accent)}
 header a{color:var(--mut2);text-decoration:none;font-size:11px;
 letter-spacing:.14em;text-transform:uppercase}
 header a:hover{color:var(--accent)}
-main{position:relative;height:calc(100% - 45px);overflow:hidden}
+header .viewctl{display:flex;align-items:center;gap:.65em;color:var(--mut2);
+font-size:11px;white-space:nowrap}
+header select,header input[type=range]{accent-color:var(--accent)}
+header select{border:1px solid var(--line);background:var(--paper);color:var(--ink);
+font:11px __SANS__;padding:.3em .45em}
+header input[type=range]{width:5.5em;vertical-align:middle}
+#scopeCount{font:10px __MONO__;color:var(--mut2);min-width:7em}
+main{position:relative;flex:1;min-height:0;overflow:hidden}
 #view{display:block;width:100%;height:100%;cursor:default;background:var(--paper)}
 #view:active{cursor:grabbing}
 aside{position:absolute;top:0;right:0;bottom:0;width:27em;max-width:92vw;
@@ -2580,6 +2594,15 @@ color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
 <body>
 <header><span class="stats">__STATS__</span>
 <button id="openSearch">search the graph<kbd>/</kbd></button>
+<span class="viewctl">view
+<select id="viewmode" aria-label="Graph view">
+<option value="focus">focused proof</option>
+<option value="goal">goal cone</option>
+<option value="all">everything</option>
+</select>
+<label id="depthbox">depth <input id="focusdepth" type="range" min="1" max="5" value="3"><output id="depthout">3</output></label>
+<label id="routebox">routes <input id="routecap" type="range" min="1" max="10" value="4"><output id="routeout">4</output></label>
+<span id="scopeCount"></span></span>
 <label><input type="checkbox" id="showdead" checked> failed routes</label>
 <label id="foldbox"><input type="checkbox" id="fold"> fold proven</label>
 <button class="lnk" id="frontierbtn">frontier</button>
@@ -2610,10 +2633,21 @@ const DATA=__DATA__;
 const panel=document.getElementById('panel');
 const pbody=document.getElementById('panelbody');
 const esc=t=>{const d=document.createElement('i');d.textContent=t;return d.innerHTML};
+let panelLoad=0;
 const openPanel=()=>panel.classList.add('open');
-const closePanel=()=>panel.classList.remove('open');
+const closePanel=()=>{panelLoad++;panel.classList.remove('open')};
 document.getElementById('closepanel').onclick=closePanel;
+const DETAIL={},DETAIL_LOAD={};
+function detailFor(id){
+ if(DETAIL[id])return Promise.resolve(DETAIL[id]);
+ const key=/^[a-z0-9]/.test(id)?id[0]:'_';
+ if(!DETAIL_LOAD[key])DETAIL_LOAD[key]=fetch('data/details-'+key+'.json')
+  .then(r=>{if(!r.ok)throw new Error('detail unavailable');return r.json()})
+  .then(rows=>{Object.assign(DETAIL,rows);return rows});
+ return DETAIL_LOAD[key].then(()=>DETAIL[id]||{}).catch(()=>({}));
+}
 function frontierHome(){
+ panelLoad++;
  let h='';
  const goals=DATA.claims.filter(c=>c.goal);
  if(goals.length){
@@ -3089,6 +3123,8 @@ sim.force('collide',rectCollide());
  }
 })();
 LBL.sort((a,b)=>prio(b.d)-prio(a.d));
+let activeLayoutNodes=nodes,activeLabels=LBL;
+let visibleNode=node,visibleLab=lab,visibleLine=line,visibleGate=gate;
 // Soft, not silent: a label is dropped only when it is mostly buried under
 // one already placed, and a goal, root or frontier claim is never dropped --
 // a graph that hides the names of the things it is about is worse than one
@@ -3114,12 +3150,12 @@ function ovl(a,b){
 function relabel(){
  const sd=document.getElementById('showdead').checked;
  const placed=[],discs=[];
- for(const n of nodes){
+ for(const n of activeLayoutNodes){
   if(n.gone||(n.dead&&!sd)||!isFinite(n.x))continue;
   const r=(n.type==='claim'?(n.goal?23:12):9)+2;
   discs.push([n.x-r,n.y-r,n.x+r,n.y+r,n]);
  }
- for(const o of LBL){
+ for(const o of activeLabels){
   const d=o.d;
   o.el.classList.remove('hidelabel');
   if(d.gone||!isFinite(d.x))continue;
@@ -3179,14 +3215,14 @@ function focusSet(d){
 }
 function highlight(d){
  if(!d){g.classed('focus',false);
-  node.classed('dim',false).classed('hot',false);
-  lab.classed('dim',false).classed('hot',false);
-  line.classed('dim',false).classed('hot',false);return}
+  visibleNode.classed('dim',false).classed('hot',false);
+  visibleLab.classed('dim',false).classed('hot',false);
+  visibleLine.classed('dim',false).classed('hot',false);return}
  const {keep,edges}=focusSet(d);
  g.classed('focus',true);
- node.classed('dim',n=>!keep.has(n.id)).classed('hot',n=>n.id===d.id);
- lab.classed('dim',n=>!keep.has(n.id)).classed('hot',n=>n.id===d.id);
- line.classed('dim',l=>!edges.has(l))
+ visibleNode.classed('dim',n=>!keep.has(n.id)).classed('hot',n=>n.id===d.id);
+ visibleLab.classed('dim',n=>!keep.has(n.id)).classed('hot',n=>n.id===d.id);
+ visibleLine.classed('dim',l=>!edges.has(l))
      .classed('hot',l=>{const[a,b]=_ends(l);return a===d.id||b===d.id});
 }
 // Guards, because the layout moves under a still cursor: without them the
@@ -3201,16 +3237,19 @@ node.on('mouseenter',(e,d)=>{
   hoverId=null;highlight(null)});
 // Every id in a panel is a link into the graph, and every artifact is a link
 // out to the file it names -- nothing in the panel is a dead end.
-const idlink=id=>byId[id]
- ?`<a href="#" data-goto="${esc(id)}">${esc(id)}</a>`
- :`<a href="${esc(id)}.html">${esc(id)}</a>`;
 const artlist=arts=>!arts||!arts.length?''
  :'<h3 class="sec">Artifacts</h3><ul class="arts">'+arts.map(a=>
    a[1]?`<li><a href="${esc(a[1])}" target="_blank" rel="noopener">${esc(a[0])}</a></li>`
        :`<li>${esc(a[0])}</li>`).join('')+'</ul>';
 function showRoute(rid){
- const r=(DATA.routes||{})[rid];
- if(!r){location.href=rid+'.html';return}
+ const base=(DATA.routes||{})[rid];
+ if(!base){location.href=rid+'.html';return}
+ const request=++panelLoad;
+ pbody.innerHTML='<p class="hint">Loading route\u2026</p>';openPanel();
+ detailFor(rid).then(extra=>{if(request===panelLoad)
+  renderRoute(rid,Object.assign({},base,extra))});
+}
+function renderRoute(rid,r){
  const blocked=new Set(r.blocked||[]);
  const nq=(r.requires||[]).length;
  let h=`<span class="chip route">route${r.dead?' &middot; failed':''}</span>
@@ -3245,6 +3284,8 @@ function afterPanel(){
   const hub=byId['j:'+rid]||byId['x:'+rid];
   if(hub){selected=hub;highlight(hub)}
   showRoute(rid);pbody.scrollTop=0});
+ pbody.querySelectorAll('a[data-focus]').forEach(a=>a.onclick=e=>{
+  e.preventDefault();if(window.focusProof)window.focusProof(a.dataset.focus)});
  openPanel();
  if(window.cairnTypeset)cairnTypeset(pbody);
 }
@@ -3253,6 +3294,44 @@ function afterPanel(){
 // answers those before it shows the statement.
 const RT=id=>(DATA.routes||{})[id]||{};
 const claimById={};for(const c of DATA.claims)claimById[c.id]=c;
+const routeEntries=Object.entries(DATA.routes||{});
+const baseEstablished=new Set(DATA.claims.filter(c=>c.status==='ESTABLISHED').map(c=>c.id));
+const baseInvalidated=new Set(routeEntries.filter(x=>x[1].dead).map(x=>x[0]));
+function sameSet(a,b){
+ if(a.size!==b.size)return false;for(const x of a)if(!b.has(x))return false;return true;
+}
+function counterfactual(id){
+ let prevInv=new Set(),prevRef=new Set(),seen=new Set(['|']);
+ for(let step=0;step<64;step++){
+  const est=new Set([id]);for(const x of prevRef)est.delete(x);
+  let changed=true;
+  while(changed){changed=false;
+   for(const [rid,r] of routeEntries){
+    if(prevInv.has(rid)||prevRef.has(r.target)||est.has(r.target))continue;
+    if(r.requires.every(q=>est.has(q))){est.add(r.target);changed=true}
+   }
+  }
+  const ref=new Set();
+  for(const c of DATA.claims)if((c.refuters||[]).some(q=>est.has(q)))ref.add(c.id);
+  const inv=new Set();
+  for(const c of DATA.claims)if(est.has(c.id))for(const rid of c.kills||[])inv.add(rid);
+  for(const [rid,r] of routeEntries)
+   if(ref.has(r.target)||r.requires.some(q=>ref.has(q)))inv.add(rid);
+  if(sameSet(inv,prevInv)&&sameSet(ref,prevRef))return {est,inv,stable:true};
+  const key=[...inv].sort().join(',')+'|'+[...ref].sort().join(',');
+  if(seen.has(key))return {est,inv,stable:false};
+  seen.add(key);prevInv=inv;prevRef=ref;
+ }
+ return {est:new Set(),inv:new Set(),stable:false};
+}
+function givesFor(id){
+ const x=counterfactual(id);
+ return {unstable:!x.stable,
+  claims:[...x.est].filter(c=>c!==id&&!baseEstablished.has(c)).sort(),
+  lost:[...baseEstablished].filter(c=>!x.est.has(c)).sort(),
+  routes:[...x.inv].filter(r=>!baseInvalidated.has(r)).sort(),
+  reopened:[...baseInvalidated].filter(r=>!x.inv.has(r)).sort()};
+}
 const rlink=rid=>`<a href="#" data-route="${esc(rid)}">${esc(RT(rid).title||rid)}</a>`;
 const clink=cid=>{const c=claimById[cid];
  return `<a href="#" data-goto="${esc(cid)}">${esc(c?c.title:cid)}</a>`};
@@ -3292,7 +3371,7 @@ function ctx(d){
   h+='<h3 class="sec">Routes</h3><p class="hint">None — nothing in the graph yet proposes how to get this.</p>';
  h+=sec('Needed by',needs.length,needs.map(r=>
    routeRow(r,'establishes '+clink(RT(r).target))));
- const g=d.gives;
+ const g=d.status==='OPEN'?givesFor(d.id):null;
  if(g){
   const rows=[];
   if(g.unstable)
@@ -3300,12 +3379,12 @@ function ctx(d){
   for(const c of g.claims.slice(0,12))
    rows.push(`<li><span class="mk ok">unlocks</span>${clink(c)}</li>`);
   if(g.claims.length>12)
-   rows.push(`<li class="hint">…and ${g.claims.length-12} more unlocked</li>`);
-  for(const c of (g.lost||[]).slice(0,12))
+   rows.push(`<li class="hint">\u2026and ${g.claims.length-12} more unlocked</li>`);
+  for(const c of g.lost.slice(0,12))
    rows.push(`<li><span class="mk dead">retracts</span>${clink(c)}</li>`);
   for(const r of g.routes.slice(0,8))
    rows.push(`<li><span class="mk dead">closes</span>${rlink(r)}</li>`);
-  for(const r of (g.reopened||[]).slice(0,8))
+  for(const r of g.reopened.slice(0,8))
    rows.push(`<li><span class="mk ok">reopens</span>${rlink(r)}</li>`);
   h+=sec('If established',rows.length,rows);
  }
@@ -3316,6 +3395,7 @@ function ctx(d){
  return h;
 }
 function showRegion(gn){
+ panelLoad++;
  pbody.innerHTML=`<span class="chip ESTABLISHED">${gn.open?'EXPANDED':'FOLDED'}</span>
   <h2>${gn.n} established claims</h2>
   <p class="hint">${gn.open
@@ -3350,28 +3430,87 @@ function foldRegion(gid){setOpen(gid,false)}
 function show(d){
  if(d.type==='group'){showRegion(d);return}
  if(d.type==='claim'){
+  const request=++panelLoad;
+  pbody.innerHTML='<p class="hint">Loading claim\u2026</p>';openPanel();
+  detailFor(d.id).then(extra=>{if(request===panelLoad)renderClaim(d,extra)});
+ }else{
+  showRoute(d.route);
+ }
+}
+function renderClaim(d,extra){
   pbody.innerHTML=`${d.goal?'<span class="chip goal">GOAL</span> ':''}<span class="chip ${d.status}">${d.status}</span>
    <h2>${esc(d.title)}</h2><code>${d.id}</code>
    ${d.lock?`<p class="hint">claimed (${esc(d.lock)})</p>`:''}
    ${ctx(d)}
    <h3 class="sec">Statement</h3>
-   <div class="stmt">${d.html||'(no statement)'}</div>
-   ${artlist(d.arts)}
+   <div class="stmt">${extra.html||'(no statement)'}</div>
+   ${artlist(extra.arts)}
+   <p><a href="#" data-focus="${d.id}">focus this proof &#8594;</a></p>
    <p><a class="open-page" href="${d.id}.html">open page &#8594;</a></p>`;
   afterPanel();
- }else{
-  showRoute(d.route);
- }
 }
 // Navigating to a folded claim opens its region first: a search result that
 // selects a node you cannot see is worse than no result.
 selectById=id=>{const d=byId[id];if(!d)return;
+ if(d.type==='claim'&&viewMode.value==='focus'&&window.focusProof){
+  window.focusProof(id);return}
  if(d.region&&byId[d.region]&&!byId[d.region].open&&foldBox.checked)
   expandRegion(d.region);
  selected=d;highlight(d);show(d);pbody.scrollTop=0};
 node.on('click',(e,d)=>{e.stopPropagation();selected=d;highlight(d);show(d)});
 svg.on('click',()=>{selected=null;highlight(null);closePanel()});
 const foldBox=document.getElementById('fold');
+const viewMode=document.getElementById('viewmode');
+const focusDepth=document.getElementById('focusdepth');
+const routeCap=document.getElementById('routecap');
+const depthOut=document.getElementById('depthout');
+const routeOut=document.getElementById('routeout');
+const scopeCount=document.getElementById('scopeCount');
+let focusAnchor=(DATA.claims.find(c=>c.goal)||DATA.claims.find(c=>c.root)
+ ||DATA.claims[0]||{}).id;
+function routeOrder(a,b){
+ const x=a[1],y=b[1];
+ return (+x.dead)-(+y.dead)
+  ||(x.status==='COMPLETE'?0:1)-(y.status==='COMPLETE'?0:1)
+  ||(x.blocked||[]).length-(y.blocked||[]).length
+  ||a[0].localeCompare(b[0]);
+}
+const focusInto={};
+for(const rid in DATA.routes){const r=DATA.routes[rid];
+ (focusInto[r.target]=focusInto[r.target]||[]).push([rid,r])}
+for(const id in focusInto)focusInto[id].sort(routeOrder);
+function currentScope(){
+ const claims=new Set(),routes=new Set(),mode=viewMode.value;
+ if(mode==='all'){
+  for(const c of DATA.claims)claims.add(c.id);
+  for(const rid in DATA.routes)routes.add(rid);
+ }else if(mode==='goal'){
+  for(const c of DATA.claims)if(c.depth!=null)claims.add(c.id);
+  for(const rid in DATA.routes){const r=DATA.routes[rid];
+   if(claims.has(r.target)&&r.requires.every(q=>claims.has(q)))routes.add(rid)}
+ }else{
+  let front=new Set([focusAnchor]);claims.add(focusAnchor);
+  for(let level=0;level<+focusDepth.value;level++){
+   const next=new Set();
+   for(const cid of front){
+    const chosen=(focusInto[cid]||[]).slice(0,+routeCap.value);
+    for(const [rid,r] of chosen){routes.add(rid);
+     for(const q of r.requires)if(!claims.has(q)){claims.add(q);next.add(q)}}
+   }
+   front=next;
+  }
+ }
+ return {claims,routes};
+}
+window.focusProof=id=>{
+ if(!byId[id]||byId[id].type!=='claim')return;
+ focusAnchor=id;viewMode.value='focus';
+ selected=byId[id];refreshVis();highlight(selected);show(selected);
+ setTimeout(()=>window.focusNode&&focusNode(selected),80);
+};
+viewMode.onchange=refreshVis;
+focusDepth.oninput=()=>{depthOut.value=focusDepth.value;refreshVis()};
+routeCap.oninput=()=>{routeOut.value=routeCap.value;refreshVis()};
 if(groups.length){
  const hid=groups.reduce((a,gn)=>a+gn.n,0);
  // default to folded only when the settled part is genuinely in the way
@@ -3385,11 +3524,14 @@ foldBox.onchange=()=>{
 };
 function refreshVis(){
  const sd=document.getElementById('showdead').checked;
- const fold=foldBox.checked;
- // Every canonical node is drawable. Folding an established region is the
- // only reason to hide one; disconnected claims are data, not UI garbage.
- nodes.forEach(d=>{d.hidden=d.type==='group'?(!fold||d.open)
-  :d.region?(fold&&!byId[d.region].open):false});
+ const fold=foldBox.checked&&viewMode.value!=='focus';
+ const scope=currentScope();
+ // Scope first, then optionally replace settled interiors with region nodes.
+ nodes.forEach(d=>{const inside=d.type==='claim'?scope.claims.has(d.id)
+  :(d.type==='junction'||d.type==='stub')?scope.routes.has(d.route)
+  :d.type==='group'&&d.members.some(id=>scope.claims.has(id));
+  d.hidden=!inside||(d.type==='group'?(!fold||d.open)
+   :d.region?(fold&&!byId[d.region].open):false)});
  nodes.forEach(d=>{d.gone=d.hidden});
  node.classed('orphan',d=>d.gone);
  lab.classed('orphan',d=>d.gone);
@@ -3398,33 +3540,45 @@ function refreshVis(){
   return (a&&a.gone)||(b&&b.gone);
  });
  g.classed('showdead',sd);
- sim.force('charge',d3.forceManyBody().strength(d=>d.gone?-2:-430));
- // an edge to something hidden must not pull the visible graph towards the
- // pile of hidden nodes
- linkForce.strength(l=>(l.source.gone||l.target.gone)?0
-  :l.kind==='aff'?.03+.1*l.w:.5);
+ const activeNodes=nodes.filter(d=>!d.gone&&(!d.dead||sd));
+ const activeIds=new Set(activeNodes.map(d=>d.id));
+ const activeLinks=links.filter(l=>activeIds.has(l.source.id||l.source)
+  &&activeIds.has(l.target.id||l.target));
+ activeLayoutNodes=activeNodes;
+ activeLabels=LBL.filter(o=>activeIds.has(o.d.id));
+ visibleNode=node.filter(d=>activeIds.has(d.id));
+ visibleLab=lab.filter(d=>activeIds.has(d.id));
+ visibleLine=line.filter(l=>activeIds.has(l.source.id||l.source)
+  &&activeIds.has(l.target.id||l.target));
+ visibleGate=gate.filter(d=>activeIds.has(d.id));
+ node.classed('dim',false).classed('hot',false);
+ lab.classed('dim',false).classed('hot',false);
+ line.classed('dim',false).classed('hot',false);
+ sim.nodes(activeNodes);
+ linkForce.links(activeLinks).strength(l=>l.kind==='aff'?.03+.1*l.w:.5);
+ sim.force('charge',d3.forceManyBody().strength(-430));
+ scopeCount.textContent=activeNodes.length+' shown';
  sim.alpha(.5).restart();
  relabel();
 }
 document.getElementById('showdead').onchange=refreshVis;
 function placeLabels(){
- for(const o of LBL)
+ for(const o of activeLabels)
   o.el.setAttribute('transform',
    'translate('+(o.d.x+o.dx)+','+(o.d.y+o.dy)+')');
 }
 sim.on('tick',()=>{
- line.each(trimEdge)
+ visibleLine.each(trimEdge)
      .attr('x1',l=>l.ex1).attr('y1',l=>l.ey1)
      .attr('x2',l=>l.ex2).attr('y2',l=>l.ey2);
- node.attr('transform',d=>`translate(${d.x},${d.y})`);
- gate.attr('transform',gateAim);
+ visibleNode.attr('transform',d=>`translate(${d.x},${d.y})`);
+ visibleGate.attr('transform',gateAim);
  placeLabels();
  scheduleRelabel();
 });
 let fitted=false;
-// Fitting 438 labelled nodes into a viewport means a 0.3 scale at best, where
-// the text is 3px tall.  So the graph does not open fitted: it opens at the
-// goal, at a size you can read, and the reader pans or hits `fit`.
+// Even a narrowed proof can be wider than the viewport. Open at its anchor at
+// a readable scale; the reader can then pan or narrow the depth/route limits.
 window.goHome=goHome;
 function goHome(){
  const target=nodes.find(n=>n.goal)||nodes.find(n=>n.root)||nodes[0];
@@ -3433,22 +3587,8 @@ function goHome(){
  svg.transition().duration(500).call(zoom.transform,
   d3.zoomIdentity.translate(W/2-k*target.x,H*0.28-k*target.y).scale(k));
 }
-// Fit once, when the layout has settled: the graph is as wide as it needs to
-// be and the viewport comes to it.  Later zooming is the reader's, so this
-// never fires again.
-function fitView(){
- const live=nodes.filter(n=>!n.gone&&isFinite(n.x)&&isFinite(n.y));
- if(live.length<2)return;
- let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
- for(const n of live){
-  if(n.x<x0)x0=n.x;if(n.x>x1)x1=n.x;
-  if(n.y<y0)y0=n.y;if(n.y>y1)y1=n.y;
- }
- const pad=90,w=Math.max(1,x1-x0)+pad*2,h=Math.max(1,y1-y0)+pad*2;
- const k=Math.max(.2,Math.min(1.6,Math.min(W/w,H/h)));
- svg.transition().duration(500).call(zoom.transform,d3.zoomIdentity
-  .translate(W/2-k*(x0+x1)/2,H/2-k*(y0+y1)/2).scale(k));
-}
+// Move to the anchor once the scoped layout has settled. Later zooming belongs
+// to the reader, so this never fires again.
 sim.on('end',()=>{relabelPending=0;relabel();
  if(!fitted){fitted=true;goHome()}});
 // Centre on a node without losing the reader's zoom level.
@@ -3550,6 +3690,12 @@ def artifact_links(paths, root, ref):
         elif ":" in p and not os.path.exists(os.path.join(REPO, p)):
             rev, _, path = p.partition(":")
             out.append((p, f"{root}/blob/{rev}/{path}" if root else None))
+        elif (p.startswith("research/") and p.endswith(".md")
+              and ID_RE.match(os.path.basename(p)[:-3])):
+            # Canonical research files already have a richer node page.  The
+            # old site rendered each one a second time as a generic source
+            # page, doubling a large graph's page count and markdown work.
+            out.append((p, os.path.basename(p)[:-3] + ".html"))
         elif _repo_has(p):
             REFERENCED_FILES.add(p)
             out.append((p, file_page_name(p)))
@@ -3646,6 +3792,8 @@ def generate_site(graph, locks):
     depths = goal_depths(graph)
     data = {"claims": [], "links": [], "junctions": [], "dead": [], "affinity": [],
             "routes": {}, "maxDepth": max(depths.values(), default=0)}
+    details = {}
+    search_rows = []
     display_frontier = set(actionable_frontier(graph))
     for cid, c in graph.claims.items():
         data["claims"].append({
@@ -3655,29 +3803,21 @@ def generate_site(graph, locks):
             "frontier": cid in display_frontier,
             "depth": depths.get(cid),
             "lock": fmt_remaining(locks[cid]) if cid in locks else None,
-            "arts": artifact_links(c.get_list("artifacts"), web, ref),
             "via": graph.provenance.get(cid),
             "refuted_by": graph.refuted_by.get(cid, []),
+            "refuters": c.get_list("refuted_by"),
             "into": graph.routes_into.get(cid, []),
             "needs": graph.required_by.get(cid, []),
-            "kills": [r for r in c.get_list("invalidates") if r in graph.routes],
-            "html": render_body(c.body)})
-    # what an open claim would buy, from the same solver the CLI uses.
-    for rec in data["claims"]:
-        if rec["status"] != "OPEN":
-            continue
-        est1, _, inv1, _, stable = graph._solve(forced=frozenset([rec["id"]]))
-        if not stable:
-            rec["gives"] = {"claims": [], "lost": [], "routes": [],
-                            "reopened": [], "unstable": True}
-            continue
-        rec["gives"] = {
-            "claims": sorted(est1 - graph.established - {rec["id"]}),
-            "lost": sorted(graph.established - est1),
-            "routes": sorted(inv1 - graph.invalidated),
-            "reopened": sorted(graph.invalidated - inv1),
-            "unstable": False,
+            "kills": [r for r in c.get_list("invalidates") if r in graph.routes]})
+        details[cid] = {
+            "html": render_body(c.body),
+            "arts": artifact_links(c.get_list("artifacts"), web, ref),
         }
+        search_rows.append({
+            "id": cid, "kind": "claim", "status": c.status,
+            "goal": bool(c.meta.get("goal")), "title": c.title,
+            "text": re.sub(r"\s+", " ", c.body).strip(),
+        })
     for rid, r in graph.routes.items():
         tgt = r.meta.get("target")
         if tgt not in graph.claims:
@@ -3690,10 +3830,17 @@ def generate_site(graph, locks):
         data["routes"][rid] = {
             "title": r.title, "target": tgt, "requires": reqs, "dead": dead,
             "killers": killers, "status": r.status,
+            "blocked": list(getattr(r, "blocked_on", []) or [])}
+        details[rid] = {
             "reasons": list(r.status_reasons),
-            "blocked": list(getattr(r, "blocked_on", []) or []),
             "arts": artifact_links(r.get_list("artifacts"), web, ref),
-            "html": render_body(r.body)}
+            "html": render_body(r.body),
+        }
+        search_rows.append({
+            "id": rid, "kind": "route", "status": r.status,
+            "goal": False, "title": r.title,
+            "text": re.sub(r"\s+", " ", r.body).strip(),
+        })
         if not reqs:
             if dead:
                 data["dead"].append({"route": rid, "target": tgt,
@@ -3716,11 +3863,24 @@ def generate_site(graph, locks):
                      .replace("__PALETTE__", PALETTE)
                      .replace("__SANS__", SANS).replace("__MONO__", MONO)
                      .replace("__SEARCH_JS__", SEARCH_JS)
-                     .replace("__DATA__", json.dumps(data).replace("</", "<\\/"))
+                     .replace("__DATA__", json.dumps(
+                         data, separators=(",", ":")).replace("</", "<\\/"))
                      .replace("__STATS__", html.escape(stats))
                      .replace("__TITLE__", html.escape(SITE_TITLE)))
     with open(os.path.join(SITE_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(idx)
+    data_dir = os.path.join(SITE_DIR, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    shards = {}
+    for nid, detail in details.items():
+        key = nid[0] if nid and nid[0].isalnum() else "_"
+        shards.setdefault(key, {})[nid] = detail
+    for key, shard in shards.items():
+        with open(os.path.join(data_dir, f"details-{key}.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(shard, f, separators=(",", ":"))
+    with open(os.path.join(data_dir, "search.json"), "w", encoding="utf-8") as f:
+        json.dump(search_rows, f, separators=(",", ":"))
     # secondary: plain listing
     B = ["<h1>All nodes</h1>",
          "<table><tr><th>id</th><th>kind</th><th>status</th><th>title</th></tr>"]
@@ -3735,12 +3895,11 @@ def generate_site(graph, locks):
         goalmark = (f'<span class="badge" style="background:{GOAL_COLOR}">GOAL</span> '
                     if n.meta.get("goal") else "")
         src = html.escape(n.relpath)
-        if _repo_has(n.relpath):
-            REFERENCED_FILES.add(n.relpath)
-            srclink = f"<a class='fileref' href='{file_page_name(n.relpath)}'>{src}</a>"
-        else:
+        if web:
             srclink = (f"<a href='{web}/blob/{ref}/{src}' target='_blank' "
-                       f"rel='noopener'>{src}</a>" if web else src)
+                       f"rel='noopener'>{src}</a>")
+        else:
+            srclink = src
         B = [f"<h1><span class='node'>{nid}</span> {html.escape(n.title)}</h1>",
              f"<p>{goalmark}{badge(n.status)} <span class='muted'>{n.kind} · "
              f"<span class='art'>{srclink}</span></span></p>"]
