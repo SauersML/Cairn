@@ -151,6 +151,53 @@ class FrontierAndLockTests(Project):
         self.assertIn("malformed node id", r.stderr)
 
 
+class RefutationTests(Project):
+    def setUp(self):
+        super().setUp()
+        claim(self.root, "false-claim", "A false mathematical claim",
+              root_=True, refuted_by="counterexample")
+        claim(self.root, "counterexample", "A counterexample")
+        route(self.root, "counterexample-proof", "Proof of the counterexample",
+              "counterexample", [])
+        claim(self.root, "consumer", "A consequence of the false claim")
+        route(self.root, "consumer-from-false", "Use the false claim",
+              "consumer", ["false-claim"])
+
+    def test_established_refuter_proves_claim_false_and_invalidates_uses(self):
+        graph = compile_at(self.root)
+        self.assertEqual(graph.claims["false-claim"].status, "REFUTED")
+        self.assertEqual(graph.refuted, {"false-claim"})
+        self.assertEqual(graph.refuted_by["false-claim"], ["counterexample"])
+        self.assertEqual(graph.routes["consumer-from-false"].status,
+                         "INVALIDATED")
+        self.assertIn("required claim false-claim is refuted",
+                      graph.routes["consumer-from-false"].status_reasons)
+        r = run_cli(self.root, "why", "false-claim")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("REFUTED — PROVED FALSE", r.stdout)
+        self.assertIn("counterexample", r.stdout)
+        r = run_cli(self.root, "status", "--json")
+        self.assertEqual(json.loads(r.stdout)["refuted"], 1)
+        r = run_cli(self.root, "site")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        index = (self.root / ".cairn" / "site" / "index.html").read_text(
+            encoding="utf-8")
+        self.assertIn('"status": "REFUTED"', index)
+        self.assertIn('"refuted_by": ["counterexample"]', index)
+        self.assertIn("proved false", index)
+
+    def test_live_proof_and_refuter_are_a_hard_contradiction(self):
+        route(self.root, "false-claim-proof", "Purported proof of false claim",
+              "false-claim", [])
+        graph = compile_at(self.root)
+        contradictions = [m for s, rule, m in graph.errors
+                          if s == "error" and rule == "contradiction"]
+        self.assertEqual(len(contradictions), 1, graph.errors)
+        self.assertIn("false-claim-proof", contradictions[0])
+        r = run_cli(self.root, "check")
+        self.assertEqual(r.returncode, cairn.EXIT_INVALID)
+
+
 class CounterfactualTests(Project):
     def _nonmonotone_fixture(self):
         claim(self.root, "seed", "Seed theorem")

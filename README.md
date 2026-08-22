@@ -28,14 +28,15 @@ TOWARD main-conjecture [OPEN] — The main conjecture of the program
 
 ## The kernel
 
-The schema (`rg: 2`) is deliberately tiny — **two objects, one extra
-relation, one metadata flag**:
+The schema (`rg: 2`) is deliberately tiny — **two objects, two derived-state
+relations, one metadata flag**:
 
 | | |
 |---|---|
 | **Claim** | a proposition. Unresolved → a hole; established → a reusable theorem. *These are not different object types* — today's open question is tomorrow's lemma. |
 | **Route** | a justified implication `AND(requires) ⟹ target`. Its existence asserts the implication is valid; the body carries the argument. `requires: []` asserts a complete direct proof. |
 | **invalidates** | an *established* claim can invalidate routes (obstructions, no-go results). Dead routes stay in the graph as a record of failed space. |
+| **refuted_by** | names claims whose establishment proves this claim false. Refuted claims and every route targeting or requiring them are disabled automatically. |
 | **goal: true** | marks a claim as a top-level human goal. Pure metadata — no effect on compilation — but it orients everything workers see: the frontier is grouped by goals, why-chains anchor at them, the site hangs from them. |
 
 Everything else falls out of one equation:
@@ -87,7 +88,7 @@ adjacent squares opposite colors.
 ```
 
 Allowed keys — claims: `rg, id, kind, title, root, goal, invalidates,
-distinct_from, artifacts`; routes: `rg, id, kind, title, target,
+refuted_by, distinct_from, artifacts`; routes: `rg, id, kind, title, target,
 requires, artifacts`. Anything else is a lint error. `root: true` marks
 program-level targets; reachability is computed from roots.
 `distinct_from: {other-id: why}` answers the duplicate detector once
@@ -106,12 +107,13 @@ that justify the node.
 ## The compiler
 
 `cairn check` parses every node, lints it, and solves the fixpoint:
-routes fire when all their prerequisites are established; an established
-obstruction switches its `invalidates:` targets off; the two iterate to
-a mutually consistent fixpoint (oscillation is an error — break the
-cycle). It then derives:
+routes fire when all their prerequisites are established; established
+obstructions disable their `invalidates:` targets; established refuters prove
+the claims naming them in `refuted_by:` false. These effects iterate to a
+mutually consistent fixpoint. Oscillation and simultaneous live proof and
+refutation are errors. It then derives:
 
-- **status** per node: claims `ESTABLISHED`/`OPEN`; routes
+- **status** per node: claims `ESTABLISHED`/`OPEN`/`REFUTED`; routes
   `COMPLETE`/`OPEN`/`INVALIDATED`, with provenance ("via route …");
 - **reachability** from root claims through live routes;
 - the **frontier**: undecomposed open claims reachable from roots, plus
