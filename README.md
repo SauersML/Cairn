@@ -298,12 +298,18 @@ attribution) is observability only and can never affect research state.
 
 ## The site
 
-`cairn site` renders a static interactive graph. It opens on a focused
-proof view: the goal (or selected claim), a bounded number of its best
-incoming routes, and a configurable number of prerequisite levels. The
-header can widen that to the complete goal cone or the entire graph;
-the depth and route sliders narrow or widen the focused proof without
-changing graph state. Goals anchor the top band, route junctions hang
+`cairn site` renders a static interactive graph. It opens on **one
+claim**: the main goal (or a claim selected from search), several ways
+to prove it, and a configurable number of prerequisite levels. **Main
+goal** shows all work that can feed the goal; **everything** removes
+that filter. **Ways per claim** controls how many competing proofs or
+reductions are drawn at each step. None of these controls changes graph
+state.
+
+Ways are ordered by **recent** work by default, using commit history
+rather than unreliable filesystem timestamps. The order menu can
+instead prefer the fewest still-missing prerequisites or completed
+routes. Goals anchor the top band, route junctions hang
 between their target and prerequisites, and failed routes are dashed
 red and toggleable. Goals are ringed and established claims filled,
 with a frontier/library panel and per-node pages for the full record.

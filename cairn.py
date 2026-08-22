@@ -229,7 +229,7 @@ NON_NODE_FILES = {"README.md", "FRONTIER.md"}
 KINDS = ("claim", "route")
 CACHE_FORMAT = 2
 
-__version__ = "2.11.0"
+__version__ = "2.12.0"
 
 EXIT_OK, EXIT_DUP, EXIT_LEASE, EXIT_INVALID, EXIT_USAGE = 0, 2, 3, 4, 64
 
@@ -2594,14 +2594,19 @@ color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
 <body>
 <header><span class="stats">__STATS__</span>
 <button id="openSearch">search the graph<kbd>/</kbd></button>
-<span class="viewctl">view
+<span class="viewctl">show
 <select id="viewmode" aria-label="Graph view">
-<option value="focus">focused proof</option>
-<option value="goal">goal cone</option>
+<option value="focus">one claim</option>
+<option value="goal">main goal</option>
 <option value="all">everything</option>
 </select>
-<label id="depthbox">depth <input id="focusdepth" type="range" min="1" max="5" value="3"><output id="depthout">3</output></label>
-<label id="routebox">routes <input id="routecap" type="range" min="1" max="10" value="4"><output id="routeout">4</output></label>
+<label id="depthbox">levels <input id="focusdepth" type="range" min="1" max="5" value="3"><output id="depthout">3</output></label>
+<label id="routebox">ways per claim <input id="routecap" type="range" min="1" max="10" value="4"><output id="routeout">4</output></label>
+<label>order <select id="routesort" aria-label="Order ways to prove each claim">
+<option value="recent">recent</option>
+<option value="missing">fewest missing</option>
+<option value="complete">completed first</option>
+</select></label>
 <span id="scopeCount"></span></span>
 <label><input type="checkbox" id="showdead" checked> failed routes</label>
 <label id="foldbox"><input type="checkbox" id="fold"> fold proven</label>
@@ -3254,6 +3259,8 @@ function renderRoute(rid,r){
  const nq=(r.requires||[]).length;
  let h=`<span class="chip route">route${r.dead?' &middot; failed':''}</span>
   <h2>${esc(r.title||rid)}</h2><code>${esc(rid)}</code>`;
+ if(r.touched)h+=`<p class="hint">${r.touched==='9999'?'changed in this checkout'
+  :'last changed '+esc(r.touched.slice(0,10))}</p>`;
  // the panel says the same thing the glyph does: what goes in, what comes out
  h+=`<p class="flow">${nq>1?`${nq} inputs &#8594; <b>AND</b> &#8594; 1 output`
   :nq===1?'1 input &#8594; 1 output':'no input (direct proof) &#8594; 1 output'}</p>`;
@@ -3445,7 +3452,7 @@ function renderClaim(d,extra){
    <h3 class="sec">Statement</h3>
    <div class="stmt">${extra.html||'(no statement)'}</div>
    ${artlist(extra.arts)}
-   <p><a href="#" data-focus="${d.id}">focus this proof &#8594;</a></p>
+   <p><a href="#" data-focus="${d.id}">show only ways to prove this claim &#8594;</a></p>
    <p><a class="open-page" href="${d.id}.html">open page &#8594;</a></p>`;
   afterPanel();
 }
@@ -3463,6 +3470,7 @@ const foldBox=document.getElementById('fold');
 const viewMode=document.getElementById('viewmode');
 const focusDepth=document.getElementById('focusdepth');
 const routeCap=document.getElementById('routecap');
+const routeSort=document.getElementById('routesort');
 const depthOut=document.getElementById('depthout');
 const routeOut=document.getElementById('routeout');
 const scopeCount=document.getElementById('scopeCount');
@@ -3470,16 +3478,26 @@ let focusAnchor=(DATA.claims.find(c=>c.goal)||DATA.claims.find(c=>c.root)
  ||DATA.claims[0]||{}).id;
 function routeOrder(a,b){
  const x=a[1],y=b[1];
- return (+x.dead)-(+y.dead)
-  ||(x.status==='COMPLETE'?0:1)-(y.status==='COMPLETE'?0:1)
-  ||(x.blocked||[]).length-(y.blocked||[]).length
-  ||a[0].localeCompare(b[0]);
+ const mode=routeSort.value;
+ const score=mode==='recent'
+  ?(y.touched||'').localeCompare(x.touched||'')
+    ||(x.blocked||[]).length-(y.blocked||[]).length
+    ||(+x.dead)-(+y.dead)
+  :mode==='missing'
+  ?(x.blocked||[]).length-(y.blocked||[]).length
+    ||(+x.dead)-(+y.dead)
+    ||(y.touched||'').localeCompare(x.touched||'')
+  :(x.status==='COMPLETE'?0:1)-(y.status==='COMPLETE'?0:1)
+    ||(+x.dead)-(+y.dead)
+    ||(y.touched||'').localeCompare(x.touched||'');
+ return score||a[0].localeCompare(b[0]);
 }
 const focusInto={};
 for(const rid in DATA.routes){const r=DATA.routes[rid];
  (focusInto[r.target]=focusInto[r.target]||[]).push([rid,r])}
-for(const id in focusInto)focusInto[id].sort(routeOrder);
-function currentScope(){
+function sortWays(){for(const id in focusInto)focusInto[id].sort(routeOrder)}
+sortWays();
+function currentScope(includeDead=true){
  const claims=new Set(),routes=new Set(),mode=viewMode.value;
  if(mode==='all'){
   for(const c of DATA.claims)claims.add(c.id);
@@ -3493,7 +3511,8 @@ function currentScope(){
   for(let level=0;level<+focusDepth.value;level++){
    const next=new Set();
    for(const cid of front){
-    const chosen=(focusInto[cid]||[]).slice(0,+routeCap.value);
+    const choices=includeDead?(focusInto[cid]||[]):(focusInto[cid]||[]).filter(x=>!x[1].dead);
+    const chosen=choices.slice(0,+routeCap.value);
     for(const [rid,r] of chosen){routes.add(rid);
      for(const q of r.requires)if(!claims.has(q)){claims.add(q);next.add(q)}}
    }
@@ -3511,6 +3530,7 @@ window.focusProof=id=>{
 viewMode.onchange=refreshVis;
 focusDepth.oninput=()=>{depthOut.value=focusDepth.value;refreshVis()};
 routeCap.oninput=()=>{routeOut.value=routeCap.value;refreshVis()};
+routeSort.onchange=()=>{sortWays();refreshVis()};
 if(groups.length){
  const hid=groups.reduce((a,gn)=>a+gn.n,0);
  // default to folded only when the settled part is genuinely in the way
@@ -3525,7 +3545,7 @@ foldBox.onchange=()=>{
 function refreshVis(){
  const sd=document.getElementById('showdead').checked;
  const fold=foldBox.checked&&viewMode.value!=='focus';
- const scope=currentScope();
+ const scope=currentScope(sd);
  // Scope first, then optionally replace settled interiors with region nodes.
  nodes.forEach(d=>{const inside=d.type==='claim'?scope.claims.has(d.id)
   :(d.type==='junction'||d.type==='stub')?scope.routes.has(d.route)
@@ -3818,6 +3838,7 @@ def generate_site(graph, locks):
             "goal": bool(c.meta.get("goal")), "title": c.title,
             "text": re.sub(r"\s+", " ", c.body).strip(),
         })
+    touched = recent_touch_stamps(graph)
     for rid, r in graph.routes.items():
         tgt = r.meta.get("target")
         if tgt not in graph.claims:
@@ -3830,6 +3851,7 @@ def generate_site(graph, locks):
         data["routes"][rid] = {
             "title": r.title, "target": tgt, "requires": reqs, "dead": dead,
             "killers": killers, "status": r.status,
+            "touched": touched.get(rid),
             "blocked": list(getattr(r, "blocked_on", []) or [])}
         details[rid] = {
             "reasons": list(r.status_reasons),
@@ -3958,6 +3980,39 @@ def _git(*argv):
                           capture_output=True, text=True)
 
 
+def recent_touch_stamps(graph, window=300):
+    """Node id -> comparable history timestamp for recently touched nodes.
+
+    The bounded history window makes this cheap on a large repository. Nodes
+    older than the window intentionally have no stamp and sort behind recent
+    work. Uncommitted nodes sort first. Filesystem mtimes are used only outside
+    a git checkout, where there is no portable history to consult.
+    """
+    hist, stamp = {}, None
+    r = _git("log", "-n", str(window), "--format=%x01%cI",
+             "--name-only", "--", "research")
+    for line in (r.stdout.splitlines() if r.returncode == 0 else []):
+        if line.startswith("\x01"):
+            stamp = line[1:]
+        elif line and stamp:
+            hist.setdefault(line, stamp)
+
+    pending = changed_research_files() or set()
+    out = {}
+    for n in graph.nodes.values():
+        if n.id in pending:
+            out[n.id] = "9999"
+        elif n.relpath in hist:
+            out[n.id] = hist[n.relpath]
+        elif r.returncode != 0:
+            try:
+                out[n.id] = time.strftime("%Y-%m-%dT%H:%M:%S",
+                                          time.localtime(os.path.getmtime(n.path)))
+            except OSError:
+                pass
+    return out
+
+
 def recently_touched(graph, limit=8):
     """(day, node) newest first — by when each node last changed in HISTORY,
     not on disk. FRONTIER.md is a committed file and mtime is not committed:
@@ -3972,33 +4027,12 @@ def recently_touched(graph, limit=8):
     section then prints the alphabetically-last nodes as the latest work, in
     every checkout, and nothing about it looks wrong.
     """
-    hist, stamp = {}, None
-    # bounded: the newest-touched nodes live in the newest commits by definition
-    r = _git("log", "-n", "300", "--format=%x01%cI", "--name-only", "--", "research")
-    for line in (r.stdout.splitlines() if r.returncode == 0 else []):
-        if line.startswith("\x01"):
-            stamp = line[1:]
-        elif line and stamp:
-            hist.setdefault(line, stamp)  # git log is newest-first
-
-    # what the worktree has that no commit does — the one thing that outranks
-    # every timestamp, and the only thing that may
-    pending = changed_research_files() or set()
-    NEW, OLD = "9999", "0000"       # uncommitted · older than the log window
-
-    def stamp_of(n):
-        if r.returncode != 0:
-            return time.strftime("%Y-%m-%dT%H:%M:%S",
-                                 time.localtime(os.path.getmtime(n.path)))
-        if n.id in pending:
-            return NEW              # sorts above any ISO timestamp
-        return hist.get(n.relpath, OLD)
-
+    stamps = recent_touch_stamps(graph)
     today = time.strftime("%Y-%m-%d")
-    dated = [n for n in graph.nodes.values() if stamp_of(n) != OLD]
-    ordered = sorted(dated, key=lambda n: (stamp_of(n), n.id),
+    dated = [n for n in graph.nodes.values() if n.id in stamps]
+    ordered = sorted(dated, key=lambda n: (stamps[n.id], n.id),
                      reverse=True)[:limit]
-    return [(today if stamp_of(n) == NEW else stamp_of(n)[:10], n)
+    return [(today if stamps[n.id] == "9999" else stamps[n.id][:10], n)
             for n in ordered]
 
 
