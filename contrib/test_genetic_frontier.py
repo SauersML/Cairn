@@ -60,7 +60,7 @@ class FakeGraph:
         if "d" in forced and "c" not in forced:
             est.add("w")
 
-        return est, set(), set(), True
+        return est, set(), set(), {}, True
 
 
 def main():

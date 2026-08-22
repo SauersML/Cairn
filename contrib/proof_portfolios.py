@@ -154,7 +154,7 @@ def proof_portfolios(cairn, graph, target, max_size=4, state_limit=4096):
     # for every candidate, then antichain the survivors once more.
     verified = []
     for candidate in plans[target]:
-        established, _, _, stable = graph._solve(forced=candidate)
+        established, _, _, _, stable = graph._solve(forced=candidate)
         if stable and target in established:
             verified.append(candidate)
 
@@ -196,7 +196,7 @@ def main(argv=None):
     shown = portfolios[:args.limit]
     rows = []
     for rank, plan in enumerate(shown, 1):
-        established, _, _, _ = graph._solve(forced=plan)
+        established, _, _, _, _ = graph._solve(forced=plan)
         rows.append({
             "rank": rank,
             "leaves": sorted(plan),

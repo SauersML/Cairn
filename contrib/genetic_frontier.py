@@ -94,7 +94,7 @@ def _distance(tokens_a, tokens_b):
 
 
 def _solve(graph, forced):
-    established, _, _, stable = graph._solve(forced=frozenset(forced))
+    established, _, _, _, stable = graph._solve(forced=frozenset(forced))
     if not stable:
         raise RuntimeError("Cairn solver did not reach a stable fixpoint")
     return set(established)

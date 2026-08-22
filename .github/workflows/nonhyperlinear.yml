@@ -20,4 +20,4 @@ jobs:
       - name: Run non-hyperlinear and non-monotone regressions
         run: python3 tests/test_nonhyperlinear.py
       - name: Verify version
-        run: python3 cairn.py --version | grep 'cairn 2.8.2'
+        run: python3 cairn.py --version | grep 'cairn 2.10.0'
