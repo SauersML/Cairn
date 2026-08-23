@@ -131,10 +131,12 @@ refutation are errors. It then derives:
   title + body, because sharing the program's subject is not being the
   same claim, and a negation never matches its positive (silenced for
   good by `distinct_from`);
-  **dead work** — every route that needed this hole is invalidated, so
-  it stopped being load-bearing;
-  **detached lanes** — one line with a count, not one line per claim,
-  since reconnecting a lane's top carries everything under it;
+  **new dead work** — a change invalidated every route that needed a hole,
+  so it stopped being load-bearing;
+  **newly detached lanes** — one line with a count, not one line per claim,
+  since reconnecting a lane's top carries everything under it. Existing
+  inactive state remains visible in `check --json` without re-warning on
+  every unrelated command;
   and **circular reasoning** — but never `A ⟺ B`, which is the kernel's
   own way to write an equivalence.
 
@@ -149,7 +151,7 @@ Read-only over canonical files and deliberately small — twelve commands:
 
 | Command | What it does |
 |---|---|
-| `check` · `build` | compile + lint + duplicate detection; refresh `FRONTIER.md`. `--changed`: duplicates are errors for files changed vs HEAD · `--strict`: fail on warnings |
+| `check` · `build` | compile + lint + duplicate detection; refresh `FRONTIER.md`. `--changed`: duplicates are errors for files changed vs HEAD · `--strict`: fail on warnings · `--json`: all findings and inactive lanes |
 | `preview` | derived-state delta of the working tree vs HEAD, *before* you commit |
 | `status` | one screen: counts, goals, goal-cone frontier, active locks |
 | `frontier` | open holes **grouped by the goals they serve**, necessity first, with the path each hole unblocks. `--goal <id>`: one cone (works for any claim, not just goals) · `--flat`: ungrouped impact-ranked list |

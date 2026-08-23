@@ -47,6 +47,19 @@ def run_cli(root, *args):
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def commit_project(root):
+    commands = [
+        ["git", "init", "-q"],
+        ["git", "config", "user.name", "Cairn Tests"],
+        ["git", "config", "user.email", "cairn-tests@example.invalid"],
+        ["git", "add", "research"],
+        ["git", "commit", "-qm", "fixture"],
+    ]
+    for command in commands:
+        subprocess.run(command, cwd=root, check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
 class Project(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -101,6 +114,18 @@ class NegationTests(Project):
                 counts[right] = counts.get(right, 0) + 1
         self.assertEqual(cairn.semantic_affinity(vectors), expected)
 
+    def test_distinct_numeric_parameters_are_not_duplicate_claims(self):
+        claim(self.root, "bound-seven", "Every model has index above 7")
+        claim(self.root, "bound-nine", "Every model has index above 9")
+        claim(self.root, "first-case", "The first rank fourteen case is fenced")
+        claim(self.root, "third-case", "The third rank fourteen case is fenced")
+        claim(self.root, "same-a", "Every model has index above 7")
+        graph = compile_at(self.root)
+        pairs = {frozenset((a, b)) for a, b, _ in cairn.duplicate_findings(graph)}
+        self.assertIn(frozenset(("bound-seven", "same-a")), pairs)
+        self.assertNotIn(frozenset(("bound-seven", "bound-nine")), pairs)
+        self.assertNotIn(frozenset(("first-case", "third-case")), pairs)
+
 
 class CycleTests(Project):
     def test_two_claim_ring_is_equivalence_only_when_both_edges_are_unary(self):
@@ -118,6 +143,21 @@ class CycleTests(Project):
         graph = compile_at(self.root)
         self.assertEqual(graph.routes["alpha-from-beta-gamma"].status, "INVALIDATED")
         self.assertFalse(any(rule == "cycle" for _, rule, _ in graph.errors), graph.errors)
+
+    def test_established_side_conditions_preserve_an_effective_equivalence(self):
+        claim(self.root, "lemma", "Established side condition")
+        route(self.root, "lemma-proof", "Proof of the side condition", "lemma", [])
+        claim(self.root, "alpha", "Alpha formulation", root_=True)
+        claim(self.root, "beta", "Beta formulation")
+        route(self.root, "alpha-from-beta", "Alpha from beta and the lemma",
+              "alpha", ["lemma", "beta"])
+        route(self.root, "beta-from-alpha", "Beta from alpha and the lemma",
+              "beta", ["lemma", "alpha"])
+        graph = compile_at(self.root)
+        self.assertEqual(graph.routes["alpha-from-beta"].blocked_on, ["beta"])
+        self.assertEqual(graph.routes["beta-from-alpha"].blocked_on, ["alpha"])
+        self.assertFalse(any(rule == "cycle" for _, rule, _ in graph.errors),
+                         graph.errors)
 
 
 class FrontierAndLockTests(Project):
@@ -156,6 +196,32 @@ class FrontierAndLockTests(Project):
         self.assertEqual(r.returncode, cairn.EXIT_INVALID, (r.stdout, r.stderr))
         after = (self.root / "research" / "FRONTIER.md").read_text(encoding="utf-8")
         self.assertEqual(after, before)
+
+    def test_check_json_reports_every_detached_top_without_prose(self):
+        claim(self.root, "detached-one", "First detached theorem")
+        claim(self.root, "detached-two", "Second detached theorem")
+        r = run_cli(self.root, "check", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stderr, "")
+        payload = json.loads(r.stdout)
+        self.assertEqual(payload["status"], "ok")
+        tops = {row["id"] for row in payload["detached_tops"]}
+        self.assertIn("detached-one", tops)
+        self.assertIn("detached-two", tops)
+        self.assertTrue(any(row["rule"] == "detached"
+                            for row in payload["findings"]))
+        self.assertTrue(payload["outputs_written"])
+
+    def test_preexisting_inactive_lanes_remain_visible_without_rewarning(self):
+        claim(self.root, "detached-one", "First detached theorem")
+        commit_project(self.root)
+        r = run_cli(self.root, "check", "--strict", "--json")
+        self.assertEqual(r.returncode, 0, (r.stdout, r.stderr))
+        payload = json.loads(r.stdout)
+        self.assertEqual(payload["findings"], [])
+        self.assertIn("detached-one",
+                      {row["id"] for row in payload["detached_tops"]})
+        self.assertEqual(payload["newly_detached"], [])
 
     def test_locks_only_reserve_real_open_claims_and_ids_cannot_escape_state_dir(self):
         r = run_cli(self.root, "lock", "side-leaf", "--ttl", "5m")

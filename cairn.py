@@ -229,7 +229,7 @@ NON_NODE_FILES = {"README.md", "FRONTIER.md"}
 KINDS = ("claim", "route")
 CACHE_FORMAT = 2
 
-__version__ = "2.12.0"
+__version__ = "2.13.0"
 
 EXIT_OK, EXIT_DUP, EXIT_LEASE, EXIT_INVALID, EXIT_USAGE = 0, 2, 3, 4, 64
 
@@ -695,10 +695,10 @@ class Graph:
                       if self.routes[rid].status != "INVALIDATED"])
             for cid in self.claims}
 
-        # Unreachable open claims: one warning per node buried the signal in
-        # a 449-claim program — 27 lines, ~19 of them one lane top and its
-        # dependents restated. Two findings hide in there and only one is a
-        # defect, so say each once:
+        # Unreachable open claims are retained here as derived state.  `check`
+        # compares them with HEAD and warns only on newly inactive work; JSON
+        # still exposes the complete inventory.  Repeating the historical
+        # inventory on every command trains users to ignore the warning:
         #   dead work  every route that needed this claim is invalidated —
         #              the hole stopped being load-bearing, worth a line each
         #   detached   a lane nothing consumes yet, plus everything under it.
@@ -717,21 +717,6 @@ class Graph:
                 self.dead_work.append(cid)
             elif not live:
                 self.detached_tops.append(cid)
-        for cid in self.dead_work:
-            self.errors.append(("warning", "dead-work", f"{self.claims[cid].relpath}: every "
-                                f"route that needs {cid} is invalidated — the "
-                                "hole is no longer load-bearing; retarget it or "
-                                "let it stand as recorded dead space"))
-        detached = [c for c in self.unreachable_open if c not in self.dead_work]
-        if detached:
-            n_below = len(detached) - len(self.detached_tops)
-            self.errors.append((
-                "warning", "detached",
-                f"{len(detached)} open claim(s) sit on no live path to a root "
-                f"claim: {len(self.detached_tops)} lane top(s)"
-                + (f" and {n_below} claim(s) below them" if n_below else "")
-                + " — reconnect a top and its lane comes with it "
-                  "(`cairn check` lists them)"))
         self._cycle_check()
 
     def _cycle_check(self):
@@ -761,7 +746,11 @@ class Graph:
         def live_unary(target, req):
             return any(r.status != "INVALIDATED"
                        and r.meta.get("target") == target
-                       and r.get_list("requires") == [req]
+                       # Established side conditions do not make an
+                       # equivalence circular.  What matters is the route's
+                       # unresolved dependency edge, not its historical list
+                       # of already-proved prerequisites.
+                       and r.blocked_on == [req]
                        for r in self.routes.values())
 
         seen = set()
@@ -1046,6 +1035,27 @@ NEGATIONS = {"no", "not", "non", "never", "cannot", "neither", "nor",
              "fails", "failure", "without", "false", "counterexample",
              "refuted", "impossible", "obstruction"}
 
+# Numerals and enumerator words name parameters, cases, and bounds rather than
+# disposable prose.  A title-only signature is intentionally conservative:
+# two claims about different ranks, indices, or enumerated cases are different
+# propositions even when every other word is identical.  Bodies and ids are
+# not used here, so an incidental citation or a copy-number suffix cannot hide
+# a genuine duplicate.
+PARAMETER_WORDS = {
+    "zero", "one", "two", "three", "four", "five", "six", "seven",
+    "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+    "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
+    "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+    "hundred", "thousand", "million", "billion",
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
+    "eighth", "ninth", "tenth", "middle", "last",
+}
+
+
+def _parameter_signature(text):
+    return tuple(sorted(tok for tok in re.findall(r"[a-z0-9]+", text.lower())
+                        if tok.isdigit() or tok in PARAMETER_WORDS))
+
 
 def _negation_signature(text):
     """Logical-negation markers, with multiplicity.
@@ -1097,6 +1107,10 @@ def duplicate_findings(graph, only_ids=None, vecs=None):
             if oid < cid and (only_ids is None or oid in only_ids):
                 continue  # report each unordered pair once
             if len(toks[cid] & toks[oid]) / len(toks[cid] | toks[oid]) < DUP_LEXICAL:
+                continue
+            left_params = _parameter_signature(c.title)
+            right_params = _parameter_signature(cand.title)
+            if (left_params or right_params) and left_params != right_params:
                 continue
             if (_negation_signature(c.title + " " + c.id)
                     != _negation_signature(cand.title + " " + cand.id)):
@@ -4281,10 +4295,11 @@ def cmd_check(args):
     graph_valid = not any(sev == "error" for sev, _, _ in errors)
     changed = changed_research_files()
     only = None
+    git_warning = False
     if args.changed:
         only = changed
         if only is None:
-            print("WARNING: git unavailable; checking everything", file=sys.stderr)
+            git_warning = True
     dups = duplicate_findings(graph, only_ids=only) if graph_valid else []
     policy_sev = "error" if args.changed else "warning"
     for cid, cand, score in dups:
@@ -4293,7 +4308,27 @@ def cmd_check(args):
                        f"  distinct_from:\n    {cand}: <why this is not that>"))
     # naming a hole is not finishing it: a NEW open claim must record at
     # least one attack (or say why the attack is deferred) before parking
-    prev = previous_graph(changed) if graph_valid else None
+    # An empty research diff means the working graph is its own baseline.
+    # `previous_graph` deliberately returns None for that case because there
+    # is no delta to compile, but lint transitions must distinguish it from
+    # git being unavailable.
+    prev = ((graph if changed == set() else previous_graph(changed))
+            if graph_valid else None)
+    previous_dead = set(prev.dead_work) if prev is not None else set()
+    newly_dead = sorted(set(graph.dead_work) - previous_dead)
+    for cid in newly_dead:
+        errors.append(("warning", "dead-work", f"{graph.claims[cid].relpath}: every "
+                       f"route that needs {cid} is invalidated — the hole is no "
+                       "longer load-bearing; retarget it or let it stand as "
+                       "recorded dead space"))
+    previous_tops = set(prev.detached_tops) if prev is not None else set()
+    newly_detached = sorted(set(graph.detached_tops) - previous_tops)
+    if newly_detached:
+        errors.append((
+            "warning", "detached",
+            f"{len(newly_detached)} open lane top(s) newly sit on no live path "
+            "to a root claim — reconnect each top or mark it root: true if it "
+            "is a genuine program target (`cairn check --json` lists them)"))
     new_open = []
     if prev is not None:
         new_open = sorted(cid for cid in graph.claims
@@ -4309,27 +4344,100 @@ def cmd_check(args):
                        "at least one approach and where it dies, or one line on why "
                        "the attack is deferred. Writing down where the obvious "
                        "attack fails is where the next one usually comes from"))
-    nerr = report_errors(errors, fail_on_warning=args.strict)
+
     # Only the lane tops: reconnecting one carries its dependents with it, so
     # listing the dependents too is the same fix printed several times.
+    detached_hints = []
     if graph_valid and graph.detached_tops:
-        print("to reconnect a lane: add a route from a reachable claim to its "
-              "top, or mark the top root: true if it is a genuine program "
-              "target. nearest reachable claims by similarity:", file=sys.stderr)
-        for cid in graph.detached_tops[:HINT_LIMIT]:
+        for cid in graph.detached_tops:
             near = [m.id for _, m in similar_nodes(
                 graph.claims[cid].title, graph.claims, limit=4, threshold=0.2,
                 exclude={cid}, min_overlap=1) if m.reachable][:2]
-            print(f"  {cid}" + (f" ~ {', '.join(near)}" if near else " ~ (none)"),
-                  file=sys.stderr)
-        if len(graph.detached_tops) > HINT_LIMIT:
-            print(f"  ... and {len(graph.detached_tops) - HINT_LIMIT} more "
-                  "(`cairn check --json` for all)", file=sys.stderr)
+            detached_hints.append({"id": cid, "nearest_reachable": near})
+
     # momentum, printed while the author's context is still loaded
     delta = kinetic_delta(prev, graph) if graph_valid and prev is not None else None
-    n_unlocked = 0
+    n_unlocked = sum(len(v) for v in delta.values()) if delta else 0
+
+    # the compose check: a fresh hole next to established claims is often
+    # already decided by them — the author is the one person positioned
+    # to notice, right now
+    compose_hints = []
+    if new_open:
+        vecs = semantic_vectors(graph.claims)
+        for cid in new_open:
+            near = sorted(((cosine(vecs[cid], vecs[oid]), oid)
+                           for oid in graph.established if oid != cid),
+                          reverse=True)[:3]
+            near = [(s, o) for s, o in near if s >= 0.12]
+            if near:
+                compose_hints.append({
+                    "id": cid,
+                    "near_established": [
+                        {"id": oid, "similarity": round(score, 2)}
+                        for score, oid in near],
+                })
+    TELEMETRY_EXTRA.update({"unlocked": n_unlocked, "parked": len(parked),
+                            "hints": len(compose_hints)})
+    if graph_valid:
+        write_outputs(graph)
+
+    nerr = sum(sev == "error" or (args.strict and sev == "warning")
+               for sev, _, _ in errors)
+    if not nerr:
+        code = EXIT_OK
+    else:
+        n_policy = ((len(dups) + len(parked))
+                    if (args.changed or args.strict) else 0)
+        code = EXIT_INVALID if nerr - n_policy > 0 else EXIT_DUP
+
+    if args.json:
+        for _, rule, _ in errors:
+            LINT_COUNTS[rule] = LINT_COUNTS.get(rule, 0) + 1
+        payload = {
+            "status": "ok" if code == EXIT_OK else "invalid",
+            "findings": [
+                {"severity": sev, "rule": rule, "message": msg}
+                for sev, rule, msg in errors],
+            "claims": len(graph.claims),
+            "routes": len(graph.routes),
+            "dead_work": sorted(graph.dead_work),
+            "detached_tops": detached_hints,
+            "newly_dead": newly_dead,
+            "newly_detached": newly_detached,
+            "unlocked": {
+                "established": delta["established"] if delta else [],
+                "refuted": delta["refuted"] if delta else [],
+                "last_missing": delta["last_missing"] if delta else [],
+                "invalidated": delta["invalidated"] if delta else [],
+                "plan_cost": delta["plan_cost"] if delta else [],
+            },
+            "compose_hints": compose_hints,
+            "outputs_written": graph_valid,
+        }
+        if git_warning:
+            payload["changed_scope"] = "all (git unavailable)"
+        print(json.dumps(payload, indent=1))
+        return code
+
+    if git_warning:
+        print("WARNING: git unavailable; checking everything", file=sys.stderr)
+    report_errors(errors, fail_on_warning=args.strict)
+    new_detached_hints = [hint for hint in detached_hints
+                          if hint["id"] in newly_detached]
+    if new_detached_hints:
+        print("to reconnect a lane: add a route from a reachable claim to its "
+              "top, or mark the top root: true if it is a genuine program "
+              "target. nearest reachable claims by similarity:", file=sys.stderr)
+        for hint in new_detached_hints[:HINT_LIMIT]:
+            near = hint["nearest_reachable"]
+            print(f"  {hint['id']}" +
+                  (f" ~ {', '.join(near)}" if near else " ~ (none)"),
+                  file=sys.stderr)
+        if len(new_detached_hints) > HINT_LIMIT:
+            print(f"  ... and {len(new_detached_hints) - HINT_LIMIT} more "
+                  "(`cairn check --json` for all)", file=sys.stderr)
     if delta and any(delta.values()):
-        n_unlocked = sum(len(v) for v in delta.values())
         print("unlocked by this change:")
         if delta["established"]:
             print("  established: " + ", ".join(delta["established"]))
@@ -4343,35 +4451,18 @@ def cmd_check(args):
         for kind, gid, a, b in delta["plan_cost"]:
             was_s = "no finite mapped plan" if a is None else str(a)
             print(f"  {kind} {gid}: cheapest mapped plan {was_s} -> {b} open hole(s)")
-    # the compose check: a fresh hole next to established claims is often
-    # already decided by them — the author is the one person positioned
-    # to notice, right now
-    hints = 0
-    if new_open:
-        vecs = semantic_vectors(graph.claims)
-        for cid in new_open:
-            near = sorted(((cosine(vecs[cid], vecs[oid]), oid)
-                           for oid in graph.established if oid != cid),
-                          reverse=True)[:3]
-            near = [(s, o) for s, o in near if s >= 0.12]
-            if near:
-                hints += 1
-                print(f"note: {cid} is near established "
-                      + ", ".join(f"{o} ({s:.2f})" for s, o in near)
-                      + " — check whether they already decide it")
-    TELEMETRY_EXTRA.update({"unlocked": n_unlocked, "parked": len(parked),
-                            "hints": hints})
+    for hint in compose_hints:
+        print(f"note: {hint['id']} is near established "
+              + ", ".join(f"{row['id']} ({row['similarity']:.2f})"
+                          for row in hint["near_established"])
+              + " — check whether they already decide it")
     if graph_valid:
-        write_outputs(graph)
         print(f"compiled {len(graph.claims)} claims + {len(graph.routes)} routes -> "
               f".cairn/cache/graph.json, research/FRONTIER.md"
               + ("" if errors else " — check clean"))
     else:
         print("compile failed; derived outputs left untouched")
-    if not nerr:
-        return EXIT_OK
-    n_policy = (len(dups) + len(parked)) if (args.changed or args.strict) else 0
-    return EXIT_INVALID if nerr - n_policy > 0 else EXIT_DUP
+    return code
 
 
 def cmd_preview(args):
@@ -5023,7 +5114,7 @@ def main():
         return sp
 
     ck = add("check", "compile + lint + duplicate detection; refresh FRONTIER.md",
-             jsonable=False, aliases=("build",))
+             aliases=("build",))
     ck.add_argument("--changed", action="store_true",
                     help="duplicates and unattacked new holes are errors "
                          "for files changed vs HEAD")
