@@ -2826,7 +2826,7 @@ const bandY=d=>80+d.layer*LGAP;
 // direction off an absence.
 svg.append('defs').html('<marker id="m" viewBox="0 0 8 8" refX="7.6" refY="4" markerWidth="8.5" markerHeight="8.5" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0L8,4L0,8z" fill="#171714a8"/></marker><marker id="mi" viewBox="0 0 8 8" refX="7.4" refY="4" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto"><path d="M0.7,0.9L7.4,4L0.7,7.1z" fill="#fff" stroke="#171714a8" stroke-width="1.2" stroke-linejoin="round"/></marker><marker id="mr" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="8.5" markerHeight="8.5" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0L8,4L0,8z" fill="#c43c2e"/></marker>');
 const g=svg.append('g');
-const zoom=d3.zoom().scaleExtent([.02,3.5])
+const zoom=d3.zoom().scaleExtent([.00001,3.5])
  .on('zoom',e=>{g.attr('transform',e.transform);scheduleOverview()});
 svg.call(zoom).on('dblclick.zoom',null);
 // These constants are the layout: strong repulsion and a weak pull to the
@@ -3743,7 +3743,7 @@ function fitView(){
  const height=svg.node().clientHeight;
  const x0=d3.min(activeLayoutNodes,d=>d.x-d.mx),x1=d3.max(activeLayoutNodes,d=>d.x+d.mx);
  const y0=d3.min(activeLayoutNodes,d=>d.y-d.my),y1=d3.max(activeLayoutNodes,d=>d.y+d.my);
- const k=Math.min(1,Math.max(.02,Math.min(width/(x1-x0+80),height/(y1-y0+80))));
+ const k=Math.min(1,Math.max(.00001,Math.min(width/(x1-x0+80),height/(y1-y0+80))));
  svg.interrupt().call(zoom.transform,d3.zoomIdentity
   .translate(width/2-k*(x0+x1)/2,height/2-k*(y0+y1)/2).scale(k));
 }
