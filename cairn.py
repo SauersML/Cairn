@@ -1895,8 +1895,6 @@ function go(i){
  close();
  if(typeof d3==='undefined'){location.href=o.id+'.html';return}
  selectById(o.id);
- if(window.focusNode&&window.__byId&&window.__byId[o.id])
-  focusNode(window.__byId[o.id]);
 }
 function open_(){pal.classList.add('on');scrim.classList.add('on');
  q.value='';render();loadCorpus();setTimeout(function(){q.focus()},20)}
@@ -2464,7 +2462,8 @@ header button.lnk:hover{color:var(--accent)}
 header a{color:var(--mut2);text-decoration:none;font-size:11px;
 letter-spacing:.14em;text-transform:uppercase}
 header a:hover{color:var(--accent)}
-header .viewctl{display:flex;align-items:center;gap:.65em;color:var(--mut2);
+#goalpick{max-width:18em}
+header .viewctl{flex-wrap:wrap;display:flex;align-items:center;gap:.65em;color:var(--mut2);
 font-size:11px;white-space:nowrap}
 header select,header input[type=range]{accent-color:var(--accent)}
 header select{border:1px solid var(--line);background:var(--paper);color:var(--ink);
@@ -2472,7 +2471,8 @@ font:11px __SANS__;padding:.3em .45em}
 header input[type=range]{width:5.5em;vertical-align:middle}
 #scopeCount{font:10px __MONO__;color:var(--mut2);min-width:7em}
 main{position:relative;flex:1;min-height:0;overflow:hidden}
-#view{display:block;width:100%;height:100%;cursor:default;background:var(--paper)}
+#overview{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#view{position:relative;display:block;width:100%;height:100%;cursor:default;background:transparent}
 #view:active{cursor:grabbing}
 aside{position:absolute;top:0;right:0;bottom:0;width:27em;max-width:92vw;
 background:var(--paper);border-left:1px solid var(--line);
@@ -2550,8 +2550,6 @@ svg text.goalcap{fill:var(--goal);stroke-width:4px}
 opacity:.75}
 g.deadbit,line.dead{visibility:hidden}
 .showdead g.deadbit,.showdead line.dead{visibility:visible}
-g.orphan{display:none}
-line.gone{display:none}
 .dim{opacity:.13}
 /* `.lk.dead` is two classes and `.dim` is one, so without these the red
    obstruction edges kept their own opacity while everything else dimmed --
@@ -2560,7 +2558,6 @@ line.gone{display:none}
    the graph is noise, not context. */
 .lk.dim,.lk.kill.dim,.lk.dead.dim{opacity:.06}
 g.n,line.lk{transition:opacity .1s ease}
-text.orphan{display:none}
 g.labels text{font:10px __MONO__;fill:var(--mut);paint-order:stroke;
 stroke:var(--paper);stroke-width:3.5px;stroke-linejoin:round}
 g.labels text.hot{fill:var(--ink);font-weight:700}
@@ -2611,7 +2608,7 @@ color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
 <span class="viewctl">show
 <select id="viewmode" aria-label="Graph view">
 <option value="focus">one claim</option>
-<option value="goal">main goal</option>
+<option value="goal">whole goal</option>
 <option value="all">everything</option>
 </select>
 <label id="depthbox">levels <input id="focusdepth" type="range" min="1" max="5" value="3"><output id="depthout">3</output></label>
@@ -2621,12 +2618,14 @@ color:var(--mut2);font-size:10.5px;display:flex;gap:1.4em}
 <option value="missing">fewest missing</option>
 <option value="complete">completed first</option>
 </select></label>
-<span id="scopeCount"></span></span>
+<label>goal <select id="goalpick" aria-label="Choose a goal"></select></label>
+<button id="fitview">fit view</button>
+<span id="scopeCount" role="status"></span></span>
 <label><input type="checkbox" id="showdead" checked> failed routes</label>
 <label id="foldbox"><input type="checkbox" id="fold"> fold proven</label>
 <button class="lnk" id="frontierbtn">frontier</button>
 <a href="nodes.html">all nodes</a></header>
-<main><svg id="view"></svg>
+<main><canvas id="overview" aria-hidden="true"></canvas><svg id="view" aria-label="Research graph"></svg>
 <div id="key">
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="7.6" fill="none" stroke="#4f46e5" stroke-width="1.8"/><circle cx="9" cy="8" r="4.6" fill="#fff" stroke="#c08a00" stroke-width="2"/></svg>goal</span>
 <span><svg width="22" height="16"><circle cx="9" cy="8" r="6" fill="#178a5e"/></svg>established</span>
@@ -2696,7 +2695,6 @@ if(typeof d3==='undefined'){
 }else{
 const nodes=[],links=[],byId={};
 for(const c of DATA.claims){c.type='claim';nodes.push(c);byId[c.id]=c}
-window.__byId=byId;
 for(const l of DATA.links)links.push({source:l.source,target:l.target,kind:'arrow',route:l.route,dead:l.dead});
 for(const j of DATA.junctions){
  const jn={id:'j:'+j.route,type:'junction',route:j.route,rtitle:j.title,
@@ -2715,6 +2713,17 @@ for(const d of DATA.dead){
   route:d.route,title:d.title,dead:true});
  for(const k of d.killers)if(byId[k])links.push({source:k,target:st.id,
   kind:'kill',route:d.route,title:d.title,dead:true});
+}
+// Refutation is a directed relation, independent of proof routes.
+for(const c of DATA.claims)for(const id of c.refuters||[])
+ if(byId[id])links.push({source:id,target:c.id,kind:'refute',
+  title:((c.refuted_by||[]).includes(id)?'refutes ':'would refute ')+c.title});
+// Obstructions must remain attached to the failed route they explain.
+for(const [rid,r] of Object.entries(DATA.routes))if(r.dead){
+ const hub=byId['j:'+rid]||byId['x:'+rid];
+ if(hub&&hub.type==='stub')continue;
+ for(const id of r.killers||[])if(byId[id])
+  links.push({source:id,target:hub?hub.id:r.target,kind:'kill',route:rid,dead:true});
 }
 for(const a of DATA.affinity)links.push({source:a.a,target:a.b,kind:'aff',w:a.w});
 // ---- proven regions -------------------------------------------------------
@@ -2802,25 +2811,23 @@ for(const n of nodes)if(n.depth==null)n.depth=maxD+1;
 const GAP=20;   // breathing room between footprints
 const real=l=>l.kind!=='aff';
 const REAL=links.filter(real);
-const svg=d3.select('#view'),W=svg.node().clientWidth,H=svg.node().clientHeight;
+const svg=d3.select('#view'),W=svg.node().clientWidth;
 // The graph is a derivation, so the layout should read as one: an integer
 // layer per node (half-steps for the junctions and stubs that sit between a
 // claim and its premises), with real vertical separation between layers.
-for(const n of nodes)n.layer=Math.round((n.depth==null?maxD+1:n.depth)*2);
 
 const LGAP=105;
 // Vertical band per layer: this is the hierarchy, and it is a force pull, not
 // a pin -- the simulation is free to bend it where the structure demands.
 const bandY=d=>80+d.layer*LGAP;
-nodes.forEach(n=>{n.y=bandY(n);n.x=W/2+(Math.random()-.5)*W*.5});
 // Three heads, and the difference between them IS the direction: an input
 // is hollow and small, an output is solid and full size, a failure is red.
 // Before this, inputs had no head at all and the reader was asked to read
 // direction off an absence.
 svg.append('defs').html('<marker id="m" viewBox="0 0 8 8" refX="7.6" refY="4" markerWidth="8.5" markerHeight="8.5" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0L8,4L0,8z" fill="#171714a8"/></marker><marker id="mi" viewBox="0 0 8 8" refX="7.4" refY="4" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto"><path d="M0.7,0.9L7.4,4L0.7,7.1z" fill="#fff" stroke="#171714a8" stroke-width="1.2" stroke-linejoin="round"/></marker><marker id="mr" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="8.5" markerHeight="8.5" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0L8,4L0,8z" fill="#c43c2e"/></marker>');
 const g=svg.append('g');
-const zoom=d3.zoom().scaleExtent([.2,3.5])
- .on('zoom',e=>{g.attr('transform',e.transform)});
+const zoom=d3.zoom().scaleExtent([.02,3.5])
+ .on('zoom',e=>{g.attr('transform',e.transform);scheduleOverview()});
 svg.call(zoom).on('dblclick.zoom',null);
 // These constants are the layout: strong repulsion and a weak pull to the
 // centre line are what open the derivation bands out into a readable shape.
@@ -2901,83 +2908,17 @@ const linkDist=l=>{
  const room=((l.source.lbl?l.source.lbl.h:0)+(l.target.lbl?l.target.lbl.h:0))*0.55;
  return (l.kind==='in'?86:150)+room;
 };
-const linkForce=d3.forceLink(links).id(d=>d.id)
+links.forEach((l,i)=>{l.key=i;l.source=byId[l.source];l.target=byId[l.target]});
+const linkForce=d3.forceLink([]).id(d=>d.id)
  .distance(linkDist)
  .strength(l=>l.kind==='aff'?.03+.1*l.w:.55);
-const sim=d3.forceSimulation(nodes)
+const sim=d3.forceSimulation([]).stop()
  .force('link',linkForce)
  .force('charge',d3.forceManyBody().strength(-430))
  .force('x',d3.forceX(W/2).strength(.05))
  .force('y',d3.forceY(bandY).strength(.5))
  .force('collide',rectCollide())
  .alphaDecay(.03);
-const line=g.selectAll('line').data(REAL).join('line')
- .attr('class',l=>'lk'+(l.kind==='kill'?' kill':'')+(l.dead?' dead':'')
-  +(l.kind==='in'?' in':l.out?' out':''))
- .attr('marker-end',l=>(l.dead||l.kind==='kill')?'url(#mr)'
-  :l.kind==='in'?'url(#mi)':'url(#m)')
- .style('cursor',l=>l.route?'pointer':null)
- .on('click',(e,l)=>{if(l.route){e.stopPropagation();showRoute(l.route)}});
-line.filter(l=>l.route).append('title').text(l=>l.title||l.route);
-const node=g.selectAll('g.n').data(nodes).join('g')
- .attr('class',d=>'n'+(d.dead?' deadbit':''))
- .style('cursor','pointer')
- .call(d3.drag()
-   .on('start',(e,d)=>{dragging=true;
-     if(!e.active)sim.alphaTarget(.12).restart();d.fx=d.x;d.fy=d.y})
-   .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y})
-   .on('end',(e,d)=>{dragging=false;
-     if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;scheduleRelabel()}));
-node.filter(d=>d.type==='claim'&&d.goal).append('circle')
- .attr('r',23).attr('fill','none').attr('stroke','var(--goal)').attr('stroke-width',2.2);
-node.filter(d=>d.type==='claim').append('circle')
- .attr('r',d=>d.goal?15:10+Math.min(d.impact*1.5,4))
- .attr('fill',d=>d.status==='ESTABLISHED'?'var(--est)':d.status==='REFUTED'?'#8f2738':'#fff')
- .attr('stroke',d=>d.status==='ESTABLISHED'?'#0f6b47':d.status==='REFUTED'?'#6f1728':'var(--open)')
- .attr('stroke-width',2.2);
-// no GOAL caption: it is a second label on the same node and always fought
-// the title for the space above the ring.  The double ring and the legend
-// carry the meaning.
-// A square carrying the conjunction sign: edges meet a box cleanly, the
-// filled face is a real hit target, and the sign is geometry rather than a
-// 9px text glyph -- as text it inherited the label halo, a paper-coloured
-// stroke around a tiny character, i.e. a blob at any zoom.
-const jn=node.filter(d=>d.type==='junction');
-// The gate is a DIRECTIONAL glyph.  A square says nothing about which way a
-// route fires, so the shell is a D: premises land on the flat back, and the
-// nose is aimed, every tick, at the claim the route would establish.  You
-// can read the direction off the shape before you look for an arrowhead.
-const gate=jn.append('g').attr('class','gate');
-gate.append('path')
- .attr('d','M-8.5,-8.5 L0.5,-8.5 L10,0 L0.5,8.5 L-8.5,8.5 Z')
- .attr('fill','var(--paper)')
- .attr('stroke',d=>d.dead?'var(--dead)':'var(--ink)')
- .attr('stroke-width',1.6).attr('stroke-linejoin','round');
-// the conjunction sign stays UPRIGHT in the node group -- rotated with the
-// shell it stops reading as a sign and becomes a stray tick
-jn.append('path')
- .attr('d','M-4.4,3.2 L0,-4 L4.4,3.2')
- .attr('fill','none')
- .attr('stroke',d=>d.dead?'var(--dead)':'var(--ink)')
- .attr('stroke-width',2)
- .attr('stroke-linejoin','miter').attr('stroke-linecap','butt')
- .attr('pointer-events','none')
- .attr('shape-rendering','geometricPrecision');
-node.filter(d=>d.type==='stub').append('circle')
- .attr('r',6.5).attr('fill','#fff').attr('stroke','var(--dead)')
- .attr('stroke-width',1.7).attr('stroke-dasharray','3 2');
-// A folded region is one block carrying one number, because the whole point
-// of the block is that there is nothing left to decide inside it.
-const grp=node.filter(d=>d.type==='group');
-grp.append('rect')
- .attr('x',d=>-d.gw).attr('y',d=>-d.gh)
- .attr('width',d=>d.gw*2).attr('height',d=>d.gh*2).attr('rx',7)
- .attr('fill','#178a5e1f').attr('stroke','var(--est)').attr('stroke-width',1.8);
-grp.append('text')
- .attr('text-anchor','middle').attr('y',4.5)
- .attr('font-size',12).attr('fill','#0f6b47').attr('font-weight',700)
- .attr('pointer-events','none')
- .text(d=>'\u2713 '+d.n+' proven');
 // Where an edge STOPS is half of what makes it directional: every line is
 // cut back to the outline of the shape it points at, so the head lands on
 // paper instead of under a disc that is drawn over it.
@@ -3050,15 +2991,89 @@ function wrapTitle(title){
 // Labels live in their own layer, created after the node groups so they draw
 // ON TOP: a title half-covered by a neighbouring disc is unreadable, and DOM
 // order is the only z-order SVG has.
+let node,lab,line,gate;
 const labelLayer=g.append('g').attr('class','labels');
-const claimNodes=nodes.filter(d=>d.type==='claim');
-const lab=labelLayer.selectAll('text').data(claimNodes).join('text')
+function renderScope(renderNodes,activeLinks){
+ LBL.length=0;
+line=g.selectAll('line').data(activeLinks.filter(real),l=>l.key).join('line')
+ .attr('class',l=>'lk'+(l.kind==='kill'||l.kind==='refute'?' kill':'')+(l.dead?' dead':'')
+  +(l.kind==='in'?' in':l.out?' out':''))
+ .attr('marker-end',l=>(l.dead||l.kind==='kill'||l.kind==='refute')?'url(#mr)'
+  :l.kind==='in'?'url(#mi)':'url(#m)')
+ .style('cursor',l=>l.route?'pointer':null)
+ .on('click',(e,l)=>{if(l.route){e.stopPropagation();showRoute(l.route)}});
+line.selectAll('title').remove();
+line.append('title').text(l=>l.title||l.route||'');
+node=g.selectAll('g.n').data(renderNodes,d=>d.id).join('g')
+ .attr('class',d=>'n'+(d.dead?' deadbit':''))
+ .style('cursor','pointer')
+ .call(d3.drag()
+   .on('start',(e,d)=>{dragging=true;
+     if(!e.active)sim.alphaTarget(.12).restart();d.fx=d.x;d.fy=d.y})
+   .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y})
+   .on('end',(e,d)=>{dragging=false;
+     if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;scheduleRelabel()}));
+node.each(function(){this.replaceChildren()});
+node.filter(d=>d.type==='claim'&&d.goal).append('circle')
+ .attr('r',23).attr('fill','none').attr('stroke','var(--goal)').attr('stroke-width',2.2);
+node.filter(d=>d.type==='claim').append('circle')
+ .attr('r',d=>d.goal?15:10+Math.min(d.impact*1.5,4))
+ .attr('fill',d=>d.status==='ESTABLISHED'?'var(--est)':d.status==='REFUTED'?'#8f2738':'#fff')
+ .attr('stroke',d=>d.status==='ESTABLISHED'?'#0f6b47':d.status==='REFUTED'?'#6f1728':'var(--open)')
+ .attr('stroke-width',2.2);
+// no GOAL caption: it is a second label on the same node and always fought
+// the title for the space above the ring.  The double ring and the legend
+// carry the meaning.
+// A square carrying the conjunction sign: edges meet a box cleanly, the
+// filled face is a real hit target, and the sign is geometry rather than a
+// 9px text glyph -- as text it inherited the label halo, a paper-coloured
+// stroke around a tiny character, i.e. a blob at any zoom.
+const jn=node.filter(d=>d.type==='junction');
+// The gate is a DIRECTIONAL glyph.  A square says nothing about which way a
+// route fires, so the shell is a D: premises land on the flat back, and the
+// nose is aimed, every tick, at the claim the route would establish.  You
+// can read the direction off the shape before you look for an arrowhead.
+gate=jn.append('g').attr('class','gate');
+gate.append('path')
+ .attr('d','M-8.5,-8.5 L0.5,-8.5 L10,0 L0.5,8.5 L-8.5,8.5 Z')
+ .attr('fill','var(--paper)')
+ .attr('stroke',d=>d.dead?'var(--dead)':'var(--ink)')
+ .attr('stroke-width',1.6).attr('stroke-linejoin','round');
+// the conjunction sign stays UPRIGHT in the node group -- rotated with the
+// shell it stops reading as a sign and becomes a stray tick
+jn.append('path')
+ .attr('d','M-4.4,3.2 L0,-4 L4.4,3.2')
+ .attr('fill','none')
+ .attr('stroke',d=>d.dead?'var(--dead)':'var(--ink)')
+ .attr('stroke-width',2)
+ .attr('stroke-linejoin','miter').attr('stroke-linecap','butt')
+ .attr('pointer-events','none')
+ .attr('shape-rendering','geometricPrecision');
+node.filter(d=>d.type==='stub').append('circle')
+ .attr('r',6.5).attr('fill','#fff').attr('stroke','var(--dead)')
+ .attr('stroke-width',1.7).attr('stroke-dasharray','3 2');
+// A folded region is one block carrying one number, because the whole point
+// of the block is that there is nothing left to decide inside it.
+const grp=node.filter(d=>d.type==='group');
+grp.append('rect')
+ .attr('x',d=>-d.gw).attr('y',d=>-d.gh)
+ .attr('width',d=>d.gw*2).attr('height',d=>d.gh*2).attr('rx',7)
+ .attr('fill','#178a5e1f').attr('stroke','var(--est)').attr('stroke-width',1.8);
+grp.append('text')
+ .attr('text-anchor','middle').attr('y',4.5)
+ .attr('font-size',12).attr('fill','#0f6b47').attr('font-weight',700)
+ .attr('pointer-events','none')
+ .text(d=>'\u2713 '+d.n+' proven');
+
+const claimNodes=renderNodes.filter(d=>d.type==='claim');
+lab=labelLayer.selectAll('text').data(claimNodes,d=>d.id).join('text')
  .attr('text-anchor','middle')
  .style('cursor','pointer')
  .on('click',(e,d)=>{e.stopPropagation();selected=d;highlight(d);show(d)})
  .on('mouseenter',(e,d)=>{if(!dragging&&!selected)highlight(d)})
  .on('mouseleave',()=>{if(!dragging&&!selected)highlight(null)});
 lab.each(function(d){
+ this.replaceChildren();
  const title=(d.title||'').replace(/\s+/g,' ').trim();
  const lines=title?wrapTitle(title):[''];
  const txt=d3.select(this);
@@ -3072,10 +3087,26 @@ lab.each(function(d){
  const rec={d:d,el:this,dx:0,dy:0,rad:rad,w:w,h:h,top:top};
  d.lbl=rec;LBL.push(rec);
 });
-for(const n of nodes)setRects(n);
+for(const n of renderNodes)setRects(n);
 linkForce.distance(linkDist);
 sim.force('collide',rectCollide());
 
+node.append('title').text(d=>d.type==='claim'?`${d.id} [${d.status}]`
+ :d.type==='group'?`${d.n} established claims — folded`
+ :d.type==='junction'?`${d.rtitle||d.route} — ${d.requires.length} inputs, 1 output`
+ :(d.rtitle||d.route));
+node.on('mouseenter',(e,d)=>{
+  if(dragging||selected||hoverId===d.id)return;
+  hoverId=d.id;highlight(d)})
+ .on('mouseleave',(e,d)=>{
+  if(dragging||selected||hoverId!==d.id)return;
+  hoverId=null;highlight(null)});
+node.on('click',(e,d)=>{e.stopPropagation();selected=d;highlight(d);show(d)});
+
+ LBL.sort((a,b)=>prio(b.d)-prio(a.d));
+ activeLabels=LBL;
+ labelLayer.raise();
+}
 // ---- hierarchy ------------------------------------------------------------
 // Layers alone are not structure: what makes a derivation readable is the
 // ORDER within each layer, so premises sit under the thing they prove and
@@ -3089,22 +3120,22 @@ sim.force('collide',rectCollide());
 // The result anchors the simulation rather than replacing it: the force still
 // resolves label collisions, but it starts from, and is held near, a shape
 // that reflects the dependency structure.
-(function layout(){
+function layout(layoutNodes,layoutLinks){
  const par={},find=x=>{while(par[x]!==x)x=par[x]=par[par[x]];return x};
- for(const n of nodes)par[n.id]=n.id;
- const adj={};for(const n of nodes)adj[n.id]=[];
- for(const l of REAL){
+ for(const n of layoutNodes)par[n.id]=n.id;
+ const adj={};for(const n of layoutNodes)adj[n.id]=[];
+ for(const l of layoutLinks){
   const a=l.source.id||l.source,b=l.target.id||l.target;
   if(adj[a]&&adj[b]){adj[a].push(b);adj[b].push(a);
    const ra=find(a),rb=find(b);if(ra!==rb)par[ra]=rb;}
  }
  const bucket={};
- for(const n of nodes)(bucket[find(n.id)]=bucket[find(n.id)]||[]).push(n);
+ for(const n of layoutNodes)(bucket[find(n.id)]=bucket[find(n.id)]||[]).push(n);
  const comps=Object.keys(bucket).sort((a,b)=>bucket[b].length-bucket[a].length);
  comps.forEach((r,i)=>bucket[r].forEach(n=>{n.comp=i}));
 
  const LAY={};
- for(const n of nodes)(LAY[n.layer]=LAY[n.layer]||[]).push(n);
+ for(const n of layoutNodes)(LAY[n.layer]=LAY[n.layer]||[]).push(n);
  const layers=Object.keys(LAY).map(Number).sort((a,b)=>a-b);
  const norm=n=>{const row=LAY[n.layer];return row.length>1?n.ord/(row.length-1):.5};
  for(const L of layers){
@@ -3132,7 +3163,7 @@ sim.force('collide',rectCollide());
  // positions -- premises start near the things they prove, in an order that
  // already has few crossings -- and then the ordinary forces take over and
  // find the shape.
- const SEED=160;
+ const SEED=250;
  for(const L of layers){
   const row=LAY[L];
   row.forEach((n,i)=>{
@@ -3140,14 +3171,8 @@ sim.force('collide',rectCollide());
    n.y=bandY(n)+(i%2?12:-12);
   });
  }
-})();
-LBL.sort((a,b)=>prio(b.d)-prio(a.d));
-let activeLayoutNodes=nodes,activeLabels=LBL;
-let visibleNode=node,visibleLab=lab,visibleLine=line,visibleGate=gate;
-// Soft, not silent: a label is dropped only when it is mostly buried under
-// one already placed, and a goal, root or frontier claim is never dropped --
-// a graph that hides the names of the things it is about is worse than one
-// with some overlap.
+}
+let activeLayoutNodes=[],activeLabels=[],activeLayoutLinks=[],overviewFrame=0;
 const LPAD=3;
 // LABELS ARE NEVER HIDDEN.  A node without its name is useless, so placement
 // only ever CHOOSES A POSITION: each label is tried under the node, above it,
@@ -3166,17 +3191,25 @@ function ovl(a,b){
  const y=Math.min(a[3],b[3])-Math.max(a[1],b[1]);
  return y>0?x*y:0;
 }
+function boxIndex(){
+ const cells=new Map(),size=180;
+ function keys(b,visit){
+  for(let x=Math.floor(b[0]/size);x<=Math.floor(b[2]/size);x++)
+   for(let y=Math.floor(b[1]/size);y<=Math.floor(b[3]/size);y++)visit(x+','+y);
+ }
+ return {add(b){keys(b,k=>{if(!cells.has(k))cells.set(k,[]);cells.get(k).push(b)})},
+  near(b){const found=new Set();keys(b,k=>{for(const v of cells.get(k)||[])found.add(v)});return found}};
+}
 function relabel(){
  const sd=document.getElementById('showdead').checked;
- const placed=[],discs=[];
+ const placed=boxIndex(),discs=boxIndex();
  for(const n of activeLayoutNodes){
   if(n.gone||(n.dead&&!sd)||!isFinite(n.x))continue;
   const r=(n.type==='claim'?(n.goal?23:12):9)+2;
-  discs.push([n.x-r,n.y-r,n.x+r,n.y+r,n]);
+  discs.add([n.x-r,n.y-r,n.x+r,n.y+r,n]);
  }
  for(const o of activeLabels){
   const d=o.d;
-  o.el.classList.remove('hidelabel');
   if(d.gone||!isFinite(d.x))continue;
   const w=o.w+LPAD*2,h=o.h+LPAD*2;
   const x0=d.x-w/2,below=d.y+o.top-LPAD;   // absolute box of the default spot
@@ -3191,21 +3224,16 @@ function relabel(){
   for(const c of cands){
    const b=[x0+c[0],below+c[1],x0+c[0]+w,below+c[1]+h];
    let sc=0;
-   for(let i=0;i<placed.length;i++)sc+=ovl(b,placed[i]);
-   for(let i=0;i<discs.length;i++)
-    if(discs[i][4]!==d)sc+=ovl(b,discs[i])*1.6;
+   for(const other of placed.near(b))sc+=ovl(b,other);
+   for(const other of discs.near(b))if(other[4]!==d)sc+=ovl(b,other)*1.6;
    if(sc<bestScore){bestScore=sc;best=[c,b];if(sc===0)break}
   }
   setPos(o,best[0][0],best[0][1]);
   setRects(d);
-  placed.push(best[1]);
+  placed.add(best[1]);
  }
  placeLabels();
 }
-node.append('title').text(d=>d.type==='claim'?`${d.id} [${d.status}]`
- :d.type==='group'?`${d.n} established claims — folded`
- :d.type==='junction'?`${d.rtitle||d.route} — ${d.requires.length} inputs, 1 output`
- :(d.rtitle||d.route));
 // Focus: hover previews, a click sticks, clicking the background clears.
 // A route is highlighted whole -- reaching a junction or a stub pulls in its
 // other endpoints, so a multi-premise route never lights up half-drawn.
@@ -3234,26 +3262,20 @@ function focusSet(d){
 }
 function highlight(d){
  if(!d){g.classed('focus',false);
-  visibleNode.classed('dim',false).classed('hot',false);
-  visibleLab.classed('dim',false).classed('hot',false);
-  visibleLine.classed('dim',false).classed('hot',false);return}
+  node.classed('dim',false).classed('hot',false);
+  lab.classed('dim',false).classed('hot',false);
+  line.classed('dim',false).classed('hot',false);return}
  const {keep,edges}=focusSet(d);
  g.classed('focus',true);
- visibleNode.classed('dim',n=>!keep.has(n.id)).classed('hot',n=>n.id===d.id);
- visibleLab.classed('dim',n=>!keep.has(n.id)).classed('hot',n=>n.id===d.id);
- visibleLine.classed('dim',l=>!edges.has(l))
+ node.classed('dim',n=>!keep.has(n.id)).classed('hot',n=>n.id===d.id);
+ lab.classed('dim',n=>!keep.has(n.id)).classed('hot',n=>n.id===d.id);
+ line.classed('dim',l=>!edges.has(l))
      .classed('hot',l=>{const[a,b]=_ends(l);return a===d.id||b===d.id});
 }
 // Guards, because the layout moves under a still cursor: without them the
 // graph fires enter/leave at itself while you drag or while it settles, and
 // each one rewrites classes on every node and edge.
 let dragging=false,hoverId=null;
-node.on('mouseenter',(e,d)=>{
-  if(dragging||selected||hoverId===d.id)return;
-  hoverId=d.id;highlight(d)})
- .on('mouseleave',(e,d)=>{
-  if(dragging||selected||hoverId!==d.id)return;
-  hoverId=null;highlight(null)});
 // Every id in a panel is a link into the graph, and every artifact is a link
 // out to the file it names -- nothing in the panel is a dead end.
 const artlist=arts=>!arts||!arts.length?''
@@ -3292,12 +3314,29 @@ function renderRoute(rid,r){
    for(const reason of r.reasons||[])h+=`<li><span class="mk dead">invalid</span> ${esc(reason)}</li>`;
   h+='</ul>';
  }
- if(r.html)h+='<h3 class="sec">Argument</h3><div class="stmt">'+r.html+'</div>';
- h+=artlist(r.arts)+`<p><a class="open-page" href="${esc(rid)}.html">open page &#8594;</a></p>`;
+ if(r.html)h+='<details id="statement"><summary>Argument</summary><div class="stmt"></div></details>';
+ h+=artlist(r.arts)+`<p><a href="#" data-focus="${esc(rid)}">focus this route &#8594;</a></p><p><a class="open-page" href="${esc(rid)}.html">open page &#8594;</a></p>`;
  pbody.innerHTML=h;
- afterPanel();
+ bindStatement(r.html);afterPanel();
+}
+function bindStatement(html){
+ const statement=pbody.querySelector('#statement');if(!statement)return;
+ statement.ontoggle=()=>{if(statement.open){statement.ontoggle=null;
+  statement.querySelector('.stmt').innerHTML=html||'(no statement)';afterPanel()}};
 }
 function afterPanel(){
+ pbody.querySelectorAll('button[data-counterfactual]').forEach(button=>button.onclick=()=>{
+  const id=button.dataset.counterfactual;button.disabled=true;button.textContent='Calculating…';
+  setTimeout(()=>{if(button.isConnected){button.outerHTML=counterfactualPanel(id);afterPanel()}},0);
+ });
+ pbody.querySelectorAll('button[data-more]').forEach(button=>button.onclick=()=>{
+  const section=panelSections[+button.dataset.more];
+  const more=section.rows.slice(section.shown,section.shown+20);section.shown+=more.length;
+  button.parentElement.insertAdjacentHTML('beforebegin',more.join(''));
+  if(section.shown===section.rows.length)button.parentElement.remove();
+  else button.textContent='show more ('+(section.rows.length-section.shown)+' remaining)';
+  afterPanel();
+ });
  pbody.querySelectorAll('a[data-goto]').forEach(a=>a.onclick=e=>{
   e.preventDefault();selectById(a.dataset.goto)});
  pbody.querySelectorAll('a[data-route]').forEach(a=>a.onclick=e=>{
@@ -3362,10 +3401,13 @@ function routeMark(rid){
  if(r.status==='COMPLETE')return '<span class="mk ok">proves it</span>';
  return `<span class="mk open">needs ${(r.blocked||[]).length}</span>`;
 }
+const panelSections=[];
 function sec(label,n,rows){
  if(!rows.length)return '';
+ const key=panelSections.push({rows,shown:20})-1;
  return `<h3 class="sec">${label}<span class="ct">${n}</span></h3>`
-  +'<ul class="fr ctx">'+rows.join('')+'</ul>';
+  +'<ul class="fr ctx">'+rows.slice(0,20).join('')
+  +(rows.length>20?`<li><button data-more="${key}">show more (${rows.length-20} remaining)</button></li>`:'')+'</ul>';
 }
 function routeRow(rid,note){
  const r=RT(rid),k=r.killers||[],bl=r.blocked||[],why=r.reasons||[];
@@ -3392,8 +3434,18 @@ function ctx(d){
   h+='<h3 class="sec">Routes</h3><p class="hint">None — nothing in the graph yet proposes how to get this.</p>';
  h+=sec('Needed by',needs.length,needs.map(r=>
    routeRow(r,'establishes '+clink(RT(r).target))));
- const g=d.status==='OPEN'?givesFor(d.id):null;
- if(g){
+ if(d.status==='OPEN')h+=`<p><button data-counterfactual="${d.id}">explore what establishing this claim changes</button></p>`;
+ const disproves=refutes[d.id]||[];
+ h+=sec(d.status==='ESTABLISHED'?'Refutes':'Would refute',disproves.length,
+  disproves.map(id=>`<li><span class="mk dead">refutes</span>${clink(id)}</li>`));
+ h+=sec('Rules out',kills.length,kills.map(r=>
+   routeRow(r,'a route to '+clink(RT(r).target))));
+ // failed attempts last: history, not the way forward
+ h+=sec('Failed attempts',dead.length,dead.map(r=>routeRow(r)));
+ return h;
+}
+function counterfactualPanel(id){
+ const g=givesFor(id);
   const rows=[];
   if(g.unstable)
    rows.push('<li class="hint">no stable invalidation fixpoint for this counterfactual</li>');
@@ -3407,13 +3459,7 @@ function ctx(d){
    rows.push(`<li><span class="mk dead">closes</span>${rlink(r)}</li>`);
   for(const r of g.reopened.slice(0,8))
    rows.push(`<li><span class="mk ok">reopens</span>${rlink(r)}</li>`);
-  h+=sec('If established',rows.length,rows);
- }
- h+=sec('Rules out',kills.length,kills.map(r=>
-   routeRow(r,'a route to '+clink(RT(r).target))));
- // failed attempts last: history, not the way forward
- h+=sec('Failed attempts',dead.length,dead.map(r=>routeRow(r)));
- return h;
+ return sec('If established',rows.length,rows)||'<p class="hint">No other claims or routes change.</p>';
 }
 function showRegion(gn){
  panelLoad++;
@@ -3444,7 +3490,7 @@ function setOpen(gid,v){
  if(!gn||gn.open===v)return;
  gn.open=v;
  if(selected&&(selected===gn||selected.region===gid)){selected=null;highlight(null)}
- refreshVis();sim.alpha(.45).restart();
+ refreshVis();
 }
 function expandRegion(gid){setOpen(gid,true)}
 function foldRegion(gid){setOpen(gid,false)}
@@ -3459,27 +3505,30 @@ function show(d){
  }
 }
 function renderClaim(d,extra){
+  panelSections.length=0;
   pbody.innerHTML=`${d.goal?'<span class="chip goal">GOAL</span> ':''}<span class="chip ${d.status}">${d.status}</span>
    <h2>${esc(d.title)}</h2><code>${d.id}</code>
    ${d.lock?`<p class="hint">claimed (${esc(d.lock)})</p>`:''}
    ${ctx(d)}
-   <h3 class="sec">Statement</h3>
-   <div class="stmt">${extra.html||'(no statement)'}</div>
+   <details id="statement"><summary>Statement</summary><div class="stmt"></div></details>
    ${artlist(extra.arts)}
-   <p><a href="#" data-focus="${d.id}">show only ways to prove this claim &#8594;</a></p>
+   <p><a href="#" data-focus="${d.id}">focus this claim &#8594;</a></p>
    <p><a class="open-page" href="${d.id}.html">open page &#8594;</a></p>`;
-  afterPanel();
+  bindStatement(extra.html);afterPanel();
 }
-// Navigating to a folded claim opens its region first: a search result that
-// selects a node you cannot see is worse than no result.
-selectById=id=>{const d=byId[id];if(!d)return;
- if(d.type==='claim'&&viewMode.value==='focus'&&window.focusProof){
-  window.focusProof(id);return}
- if(d.region&&byId[d.region]&&!byId[d.region].open&&foldBox.checked)
-  expandRegion(d.region);
- selected=d;highlight(d);show(d);pbody.scrollTop=0};
-node.on('click',(e,d)=>{e.stopPropagation();selected=d;highlight(d);show(d)});
-svg.on('click',()=>{selected=null;highlight(null);closePanel()});
+selectById=id=>window.focusProof(id);
+svg.on('click',e=>{
+ if(activeLayoutNodes.length>400){
+  const t=d3.zoomTransform(svg.node()),[px,py]=d3.pointer(e,svg.node());
+  const [x,y]=t.invert([px,py]);
+  const d=d3.least(activeLayoutNodes,n=>Math.hypot(n.x-x,n.y-y));
+  if(d&&Math.hypot(d.x-x,d.y-y)<Math.max(24,14/t.k)){
+   if(d.type==='group'){selected=d;show(d)}else selectById(d.route||d.id);
+   return;
+  }
+ }
+ selected=null;highlight(null);closePanel();
+});
 const foldBox=document.getElementById('fold');
 const viewMode=document.getElementById('viewmode');
 const focusDepth=document.getElementById('focusdepth');
@@ -3489,7 +3538,11 @@ const depthOut=document.getElementById('depthout');
 const routeOut=document.getElementById('routeout');
 const scopeCount=document.getElementById('scopeCount');
 let focusAnchor=(DATA.claims.find(c=>c.goal)||DATA.claims.find(c=>c.root)
- ||DATA.claims[0]||{}).id;
+ ||DATA.claims[0]||{}).id,focusRoute=null;
+const goalPick=document.getElementById('goalpick');
+for(const c of DATA.claims.filter(c=>c.goal)){const option=new Option(c.title,c.id);goalPick.add(option)}
+goalPick.value=focusAnchor;
+goalPick.onchange=()=>window.focusProof(goalPick.value);
 function routeOrder(a,b){
  const x=a[1],y=b[1];
  const mode=routeSort.value;
@@ -3511,35 +3564,58 @@ for(const rid in DATA.routes){const r=DATA.routes[rid];
  (focusInto[r.target]=focusInto[r.target]||[]).push([rid,r])}
 function sortWays(){for(const id in focusInto)focusInto[id].sort(routeOrder)}
 sortWays();
+const refutes={};
+for(const c of DATA.claims)for(const id of c.refuters||[])
+ (refutes[id]=refutes[id]||[]).push(c.id);
 function currentScope(includeDead=true){
- const claims=new Set(),routes=new Set(),mode=viewMode.value;
+ const claims=new Set(),routes=new Set(),depths=new Map(),mode=viewMode.value;
+ const addClaim=(id,depth)=>{if(!byId[id])return;claims.add(id);
+  if(!depths.has(id))depths.set(id,depth)};
+ const addRoute=(rid,depth)=>{const r=DATA.routes[rid];if(!r)return;
+  routes.add(rid);addClaim(r.target,depth);
+  for(const q of r.requires)addClaim(q,depth+1);
+  for(const q of r.killers||[])addClaim(q,depth+1);
+ };
  if(mode==='all'){
-  for(const c of DATA.claims)claims.add(c.id);
-  for(const rid in DATA.routes)routes.add(rid);
- }else if(mode==='goal'){
-  for(const c of DATA.claims)if(c.depth!=null)claims.add(c.id);
-  for(const rid in DATA.routes){const r=DATA.routes[rid];
-   if(claims.has(r.target)&&r.requires.every(q=>claims.has(q)))routes.add(rid)}
+  for(const c of DATA.claims)addClaim(c.id,c.depth||0);
+  for(const rid in DATA.routes)if(includeDead||!DATA.routes[rid].dead)addRoute(rid,0);
  }else{
-  let front=new Set([focusAnchor]);claims.add(focusAnchor);
-  for(let level=0;level<+focusDepth.value;level++){
-   const next=new Set();
+  addClaim(focusAnchor,0);
+  // The anchor's effects are part of its meaning, including negative effects.
+  for(const id of refutes[focusAnchor]||[])addClaim(id,1);
+  for(const id of byId[focusAnchor]?.refuted_by||[])addClaim(id,1);
+  if(includeDead)for(const rid of byId[focusAnchor]?.kills||[])addRoute(rid,0);
+  if(focusRoute)addRoute(focusRoute,0);
+  let front=[...claims],visited=new Set();
+  const levels=mode==='goal'?Infinity:+focusDepth.value;
+  for(let level=0;front.length&&level<levels;level++){
+   const next=[];
    for(const cid of front){
-    const choices=includeDead?(focusInto[cid]||[]):(focusInto[cid]||[]).filter(x=>!x[1].dead);
-    const chosen=choices.slice(0,+routeCap.value);
-    for(const [rid,r] of chosen){routes.add(rid);
-     for(const q of r.requires)if(!claims.has(q)){claims.add(q);next.add(q)}}
+    if(visited.has(cid))continue;visited.add(cid);
+    const choices=(focusInto[cid]||[]).filter(x=>includeDead||!x[1].dead);
+    for(const [rid,r] of mode==='goal'?choices:choices.slice(0,+routeCap.value)){
+     addRoute(rid,depths.get(cid)||0);
+     for(const q of r.requires)if(!visited.has(q))next.push(q);
+    }
    }
    front=next;
   }
  }
- return {claims,routes};
+ // Show the established refuters of every false claim in the selected proof.
+ for(const id of [...claims])for(const q of byId[id]?.refuted_by||[])
+  addClaim(q,(depths.get(id)||0)+1);
+ return {claims,routes,depths};
 }
 window.focusProof=id=>{
- if(!byId[id]||byId[id].type!=='claim')return;
- focusAnchor=id;viewMode.value='focus';
- selected=byId[id];refreshVis();highlight(selected);show(selected);
- setTimeout(()=>window.focusNode&&focusNode(selected),80);
+ const route=DATA.routes[id],d=route?byId[route.target]:byId[id];
+ if(!d||d.type!=='claim')return;
+ focusAnchor=d.id;focusRoute=route?id:null;viewMode.value='focus';
+ goalPick.value=d.goal?d.id:'';
+ if(route?.dead)document.getElementById('showdead').checked=true;
+ refreshVis();selected=route?(byId['j:'+id]||byId['x:'+id]||d):d;
+ highlight(selected);if(route)showRoute(id);else show(d);
+ pbody.scrollTop=0;history.replaceState(null,'','#node='+encodeURIComponent(id));
+ goHome();
 };
 viewMode.onchange=refreshVis;
 focusDepth.oninput=()=>{depthOut.value=focusDepth.value;refreshVis()};
@@ -3554,46 +3630,41 @@ if(groups.length){
 }else document.getElementById('foldbox').style.display='none';
 foldBox.onchange=()=>{
  if(foldBox.checked)for(const gn of groups)gn.open=false;
- refreshVis();sim.alpha(.45).restart();
+ refreshVis();
 };
 function refreshVis(){
+ sim.stop();clearTimeout(relabelPending);relabelPending=0;
  const sd=document.getElementById('showdead').checked;
  const fold=foldBox.checked&&viewMode.value!=='focus';
  const scope=currentScope(sd);
- // Scope first, then optionally replace settled interiors with region nodes.
- nodes.forEach(d=>{const inside=d.type==='claim'?scope.claims.has(d.id)
+ for(const d of nodes){const inside=d.type==='claim'?scope.claims.has(d.id)
   :(d.type==='junction'||d.type==='stub')?scope.routes.has(d.route)
-  :d.type==='group'&&d.members.some(id=>scope.claims.has(id));
-  d.hidden=!inside||(d.type==='group'?(!fold||d.open)
-   :d.region?(fold&&!byId[d.region].open):false)});
- nodes.forEach(d=>{d.gone=d.hidden});
- node.classed('orphan',d=>d.gone);
- lab.classed('orphan',d=>d.gone);
- line.classed('gone',l=>{
-  const a=byId[l.source.id||l.source],b=byId[l.target.id||l.target];
-  return (a&&a.gone)||(b&&b.gone);
- });
- g.classed('showdead',sd);
- const activeNodes=nodes.filter(d=>!d.gone&&(!d.dead||sd));
+  :d.members.some(id=>scope.claims.has(id));
+  d.gone=!inside||(d.type==='group'?(!fold||d.open)
+   :d.region?(fold&&!byId[d.region].open):false)||!!(d.dead&&!sd);
+  const depth=scope.depths.get(d.type==='claim'?d.id:d.tgt);
+  d.layer=depth==null?Math.round(d.depth*2):depth*2+(d.type==='claim'?0:1);
+ }
+ const activeNodes=nodes.filter(d=>!d.gone);
  const activeIds=new Set(activeNodes.map(d=>d.id));
- const activeLinks=links.filter(l=>activeIds.has(l.source.id||l.source)
-  &&activeIds.has(l.target.id||l.target));
+ const activeLinks=links.filter(l=>activeIds.has(l.source.id)&&activeIds.has(l.target.id)
+  &&(!l.route||scope.routes.has(l.route))&&(!l.dead||sd));
  activeLayoutNodes=activeNodes;
- activeLabels=LBL.filter(o=>activeIds.has(o.d.id));
- visibleNode=node.filter(d=>activeIds.has(d.id));
- visibleLab=lab.filter(d=>activeIds.has(d.id));
- visibleLine=line.filter(l=>activeIds.has(l.source.id||l.source)
-  &&activeIds.has(l.target.id||l.target));
- visibleGate=gate.filter(d=>activeIds.has(d.id));
- node.classed('dim',false).classed('hot',false);
- lab.classed('dim',false).classed('hot',false);
- line.classed('dim',false).classed('hot',false);
- sim.nodes(activeNodes);
- linkForce.links(activeLinks).strength(l=>l.kind==='aff'?.03+.1*l.w:.5);
- sim.force('charge',d3.forceManyBody().strength(-430));
- scopeCount.textContent=activeNodes.length+' shown';
- sim.alpha(.5).restart();
- relabel();
+ // Detach old links before reinitializing the simulation's smaller node set.
+ linkForce.links([]);sim.nodes(activeNodes);linkForce.links(activeLinks);
+ activeLayoutLinks=activeLinks.filter(real);
+ renderScope(activeNodes.length<=400?activeNodes:[],activeNodes.length<=400?activeLinks:[]);
+ for(const d of activeNodes)setRects(d);
+ layout(activeNodes,activeLayoutLinks);
+ g.classed('showdead',sd);
+ scopeCount.textContent=activeNodes.length+' shown / '+DATA.claims.length+' claims';
+ document.getElementById('depthbox').hidden=viewMode.value!=='focus';
+ document.getElementById('routebox').hidden=viewMode.value!=='focus';
+ selected=null;highlight(null);relabel();drawFrame();
+ // Small scopes settle interactively; large overviews use the layered layout.
+ // No full-corpus simulation runs during navigation or overview rendering.
+ if(activeNodes.length<=400)sim.alpha(.5).restart();
+ goHome();
 }
 document.getElementById('showdead').onchange=refreshVis;
 function placeLabels(){
@@ -3601,37 +3672,88 @@ function placeLabels(){
   o.el.setAttribute('transform',
    'translate('+(o.d.x+o.dx)+','+(o.d.y+o.dy)+')');
 }
-sim.on('tick',()=>{
- visibleLine.each(trimEdge)
+function drawFrame(){
+ scheduleOverview();
+ line.each(trimEdge)
      .attr('x1',l=>l.ex1).attr('y1',l=>l.ey1)
      .attr('x2',l=>l.ex2).attr('y2',l=>l.ey2);
- visibleNode.attr('transform',d=>`translate(${d.x},${d.y})`);
- visibleGate.attr('transform',gateAim);
+ node.attr('transform',d=>`translate(${d.x},${d.y})`);
+ gate.attr('transform',gateAim);
  placeLabels();
- scheduleRelabel();
-});
-let fitted=false;
-// Even a narrowed proof can be wider than the viewport. Open at its anchor at
-// a readable scale; the reader can then pan or narrow the depth/route limits.
+}
+sim.on('tick',()=>{drawFrame();scheduleRelabel()});
+const overview=document.getElementById('overview'),brush=overview.getContext('2d');
+function scheduleOverview(){
+ if(overviewFrame)return;
+ overviewFrame=requestAnimationFrame(()=>{overviewFrame=0;drawOverview()});
+}
+function drawOverview(){
+ const width=svg.node().clientWidth,height=svg.node().clientHeight,dpr=devicePixelRatio||1;
+ if(overview.width!==Math.round(width*dpr)||overview.height!==Math.round(height*dpr)){
+  overview.width=Math.round(width*dpr);overview.height=Math.round(height*dpr);
+ }
+ brush.setTransform(dpr,0,0,dpr,0,0);brush.clearRect(0,0,width,height);
+ if(activeLayoutNodes.length<=400)return;
+ const t=d3.zoomTransform(svg.node());
+ brush.translate(t.x,t.y);brush.scale(t.k,t.k);
+ const x0=-t.x/t.k-300,x1=(width-t.x)/t.k+300;
+ const y0=-t.y/t.k-100,y1=(height-t.y)/t.k+100;
+ for(const l of activeLayoutLinks){
+  const a=l.source,b=l.target;
+  if(Math.max(a.x,b.x)<x0||Math.min(a.x,b.x)>x1||Math.max(a.y,b.y)<y0||Math.min(a.y,b.y)>y1)continue;
+  trimEdge(l);const dead=l.dead||l.kind==='kill'||l.kind==='refute';
+  brush.strokeStyle=dead?'#c43c2e':'#17171466';brush.lineWidth=(l.out?2:1)/Math.max(.5,t.k);
+  brush.setLineDash(dead?[5,3]:[]);brush.beginPath();brush.moveTo(l.ex1,l.ey1);brush.lineTo(l.ex2,l.ey2);brush.stroke();
+  if(t.k>.3){const angle=Math.atan2(b.y-a.y,b.x-a.x),r=7;
+   brush.setLineDash([]);brush.beginPath();brush.moveTo(l.ex2,l.ey2);
+   brush.lineTo(l.ex2-r*Math.cos(angle-.45),l.ey2-r*Math.sin(angle-.45));
+   brush.lineTo(l.ex2-r*Math.cos(angle+.45),l.ey2-r*Math.sin(angle+.45));
+   brush.closePath();brush.fillStyle=dead?'#c43c2e':'#17171499';brush.fill();
+  }
+ }
+ brush.setLineDash([]);brush.font='10px monospace';brush.textAlign='center';
+ for(const d of activeLayoutNodes){
+  if(d.x<x0||d.x>x1||d.y<y0||d.y>y1)continue;
+  brush.fillStyle=d.status==='ESTABLISHED'?'#178a5e':d.status==='REFUTED'?'#8f2738':'#fff';
+  brush.strokeStyle=d.dead?'#c43c2e':d.goal?'#4f46e5':'#c08a00';brush.lineWidth=2;
+  brush.beginPath();
+  if(d.type==='claim')brush.arc(d.x,d.y,d.goal?15:11,0,2*Math.PI);
+  else brush.rect(d.x-9,d.y-9,18,18);
+  brush.fill();brush.stroke();
+  if(d.goal){brush.beginPath();brush.arc(d.x,d.y,23,0,2*Math.PI);brush.stroke()}
+  if(t.k>=.4&&d.type==='claim'){
+   brush.fillStyle='#555';const lines=wrapTitle(d.title);
+   lines.forEach((line,i)=>brush.fillText(line,d.x,d.y+34+i*11));
+  }
+ }
+}
+new ResizeObserver(()=>{scheduleOverview()}).observe(svg.node());
 window.goHome=goHome;
 function goHome(){
- const target=nodes.find(n=>n.goal)||nodes.find(n=>n.root)||nodes[0];
+ const target=byId[focusAnchor];
  if(!target||!isFinite(target.x))return;
- const k=0.85;
- svg.transition().duration(500).call(zoom.transform,
-  d3.zoomIdentity.translate(W/2-k*target.x,H*0.28-k*target.y).scale(k));
+ const width=svg.node().clientWidth-(panel.classList.contains('open')?panel.clientWidth:0);
+ const k=.85;
+ svg.interrupt().call(zoom.transform,
+  d3.zoomIdentity.translate(width/2-k*target.x,90-k*target.y).scale(k));
 }
-// Move to the anchor once the scoped layout has settled. Later zooming belongs
-// to the reader, so this never fires again.
-sim.on('end',()=>{relabelPending=0;relabel();
- if(!fitted){fitted=true;goHome()}});
-// Centre on a node without losing the reader's zoom level.
-window.focusNode=function(d){
- const t=d3.zoomTransform(svg.node());
- svg.transition().duration(420).call(zoom.transform,
-  d3.zoomIdentity.translate(W/2-d.x*t.k,H/2-d.y*t.k).scale(t.k));
-};
+function fitView(){
+ if(!activeLayoutNodes.length)return;
+ const width=svg.node().clientWidth-(panel.classList.contains('open')?panel.clientWidth:0);
+ const height=svg.node().clientHeight;
+ const x0=d3.min(activeLayoutNodes,d=>d.x-d.mx),x1=d3.max(activeLayoutNodes,d=>d.x+d.mx);
+ const y0=d3.min(activeLayoutNodes,d=>d.y-d.my),y1=d3.max(activeLayoutNodes,d=>d.y+d.my);
+ const k=Math.min(1,Math.max(.02,Math.min(width/(x1-x0+80),height/(y1-y0+80))));
+ svg.interrupt().call(zoom.transform,d3.zoomIdentity
+  .translate(width/2-k*(x0+x1)/2,height/2-k*(y0+y1)/2).scale(k));
+}
+document.getElementById('fitview').onclick=fitView;
+sim.on('end',()=>{clearTimeout(relabelPending);relabelPending=0;relabel()});
+
 refreshVis();
+function readFocus(){if(location.hash.startsWith('#node='))
+ window.focusProof(decodeURIComponent(location.hash.slice(6)))}
+window.addEventListener('hashchange',readFocus);readFocus();
 }
 __SEARCH_JS__
 </script>

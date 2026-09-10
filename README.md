@@ -302,11 +302,14 @@ attribution) is observability only and can never affect research state.
 
 `cairn site` renders a static interactive graph. It opens on **one
 claim**: the main goal (or a claim selected from search), several ways
-to prove it, and a configurable number of prerequisite levels. **Main
-goal** shows all work that can feed the goal; **everything** removes
+to prove it, and a configurable number of prerequisite levels. **Whole
+goal** shows all work that can feed the selected goal; **everything** removes
 that filter. **Ways per claim** controls how many competing proofs or
 reductions are drawn at each step. None of these controls changes graph
-state.
+state. Choose another goal from the goal menu, or search for any claim or
+route. Opening a search result always focuses its own graph, even from the
+everything view. Focus includes refuted claims and invalidated routes attached
+to an obstruction. The address bar records a shareable `#node=<id>` link.
 
 Ways are ordered by **recent** work by default, using commit history
 rather than unreliable filesystem timestamps. The order menu can
@@ -320,8 +323,12 @@ Large graphs do not pay for the full record up front. The landing page
 contains compact graph structure only; statements and artifacts load
 from alphabetic shards when a panel opens, and the full-text corpus
 loads when search first opens. Layout, collision, label, and animation
-work runs only for the current view. Counterfactual impact is likewise
-computed only for the open claim whose panel is being read.
+work runs only for the current view. Small views create SVG elements only for
+the visible scope and use spatial indexes for label placement. Views above 400
+nodes use a static canvas overview; pan, zoom, fit, or click a node to focus it.
+Panels show related nodes in batches. Expand Statement or Argument to render
+the full text, and request counterfactual impact explicitly from an open claim's
+panel.
 
 A multi-premise route draws as a gate whose nose points at the claim it
 would establish: premises arrive at its flat back with small hollow

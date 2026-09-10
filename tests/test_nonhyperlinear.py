@@ -386,12 +386,12 @@ class CounterfactualTests(Project):
         self.assertTrue((self.root / ".cairn" / "site" / "data" /
                          "search.json").is_file())
         self.assertIn('<option value="focus">one claim</option>', index)
-        self.assertIn('<option value="goal">main goal</option>', index)
+        self.assertIn('<option value="goal">whole goal</option>', index)
         self.assertIn('ways per claim', index)
         self.assertIn('<option value="recent">recent</option>', index)
         self.assertIn('<option value="missing">fewest missing</option>', index)
         self.assertIn('"touched":', index)
-        self.assertIn("d.gone=d.hidden", index)
+        self.assertIn("const scope=currentScope(sd)", index)
         self.assertNotIn("d.orphan=d.type==='claim'", index)
 
     def test_unstable_counterfactual_is_never_presented_as_a_fact(self):
